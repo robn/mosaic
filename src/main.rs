@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{ArgGroup, Parser, ValueEnum};
 use log::{debug, warn};
 use xcb::{x, Xid};
 
@@ -14,13 +14,20 @@ xcb::atoms_struct! {
         pub net_wm_window_type => b"_NET_WM_WINDOW_TYPE",
         pub net_wm_window_type_normal => b"_NET_WM_WINDOW_TYPE_NORMAL",
         pub net_wm_window_type_dock => b"_NET_WM_WINDOW_TYPE_DOCK",
+
+        pub net_active_window => b"_NET_ACTIVE_WINDOW",
     }
 }
 
+// XXX use ArgGroup enums for target: https://github.com/clap-rs/clap/issues/2621
 #[derive(Parser, Debug)]
-struct Args {
-    #[clap(long, parse(try_from_str=clap_num::maybe_hex))]
-    id: u32,
+#[clap(group(ArgGroup::new("target").required(true)))]
+struct RootArgs {
+    #[clap(long, group = "target", parse(try_from_str=clap_num::maybe_hex))]
+    id: Option<u32>,
+
+    #[clap(long, group = "target")]
+    active: bool,
 
     #[clap(long, value_enum)]
     horiz: HorizSpec,
@@ -52,6 +59,13 @@ enum VertSpec {
 }
 
 #[derive(Debug)]
+enum TargetArgs {
+    None,
+    Id(u32),
+    Active,
+}
+
+#[derive(Debug)]
 struct Bounds {
     x: i16,
     y: i16,
@@ -60,7 +74,15 @@ struct Bounds {
 }
 
 fn main() -> xcb::Result<()> {
-    let args = Args::parse();
+    let args = RootArgs::parse();
+
+    let target_arg = if let Some(id) = args.id {
+        TargetArgs::Id(id)
+    } else if args.active {
+        TargetArgs::Active
+    } else {
+        TargetArgs::None
+    };
 
     env_logger::Builder::new().parse_default_env().init();
 
@@ -158,15 +180,33 @@ fn main() -> xcb::Result<()> {
     };
     debug!("usable screen bounds: {:?}", usable_bounds);
 
-    // find the wanted window
+    // figure out the window they asked for
+    let id = match target_arg {
+        TargetArgs::Id(id) => id,
+        TargetArgs::Active => {
+            let activeprop = conn.wait_for_reply(conn.send_request(&x::GetProperty {
+                window: screen.root(),
+                delete: false,
+                property: atoms.net_active_window,
+                r#type: x::ATOM_WINDOW,
+                long_offset: 0,
+                long_length: 512,
+            }))?;
+            activeprop.value()[0]
+        }
+        TargetArgs::None => unreachable!(),
+    };
+    debug!("requested window id: {}", id);
+
+    // and match it to an actual window
     let w = match normal_windows
         .iter()
-        .filter(|&w| w.resource_id() == args.id)
+        .filter(|&w| w.resource_id() == id)
         .next()
     {
         Some(w) => w,
         _ => {
-            warn!("requested window {} not found", args.id);
+            warn!("requested window {} not found", id);
             return Ok(());
         }
     };
