@@ -16,6 +16,8 @@ xcb::atoms_struct! {
         pub net_wm_window_type_dock => b"_NET_WM_WINDOW_TYPE_DOCK",
 
         pub net_active_window => b"_NET_ACTIVE_WINDOW",
+
+        pub net_frame_extents => b"_NET_FRAME_EXTENTS",
     }
 }
 
@@ -71,6 +73,14 @@ struct Bounds {
     y: i16,
     w: u16,
     h: u16,
+}
+
+#[derive(Debug)]
+struct Extents {
+    left: u16,
+    right: u16,
+    top: u16,
+    bottom: u16,
 }
 
 fn main() -> xcb::Result<()> {
@@ -229,17 +239,36 @@ fn main() -> xcb::Result<()> {
     };
     debug!("window bounds: {:?}", window_bounds);
 
+    let frame_extents = get_frame_extents(&conn, &atoms, w)?;
+    debug!("frame extents: {:?}", frame_extents);
+
+    let offset_window_bounds = Bounds {
+        x: window_bounds.x - frame_extents.left as i16,
+        y: window_bounds.y - frame_extents.top as i16,
+        w: window_bounds.w + frame_extents.left + frame_extents.right,
+        h: window_bounds.h + frame_extents.top + frame_extents.bottom,
+    };
+    debug!("offset window bounds: {:?}", offset_window_bounds);
+
     let target_bounds =
-        compute_target_bounds(&window_bounds, &usable_bounds, args.horiz, args.vert);
+        compute_target_bounds(&offset_window_bounds, &usable_bounds, args.horiz, args.vert);
     debug!("target bounds: {:?}", target_bounds);
+
+    let final_bounds = Bounds {
+        x: target_bounds.x + frame_extents.left as i16,
+        y: target_bounds.y + frame_extents.top as i16,
+        w: target_bounds.w - frame_extents.left - frame_extents.right,
+        h: target_bounds.h - frame_extents.top - frame_extents.bottom,
+    };
+    debug!("final bounds: {:?}", final_bounds);
 
     conn.send_request(&x::ConfigureWindow {
         window: *w,
         value_list: &[
-            x::ConfigWindow::X(target_bounds.x.into()),
-            x::ConfigWindow::Y(target_bounds.y.into()),
-            x::ConfigWindow::Width(target_bounds.w.into()),
-            x::ConfigWindow::Height(target_bounds.h.into()),
+            x::ConfigWindow::X(final_bounds.x.into()),
+            x::ConfigWindow::Y(final_bounds.y.into()),
+            x::ConfigWindow::Width(final_bounds.w.into()),
+            x::ConfigWindow::Height(final_bounds.h.into()),
         ],
     });
     conn.flush()?;
@@ -393,6 +422,28 @@ fn get_window_geometry(conn: &xcb::Connection, w: &x::Window) -> xcb::Result<x::
     conn.wait_for_reply(conn.send_request(&x::GetGeometry {
         drawable: x::Drawable::Window(*w),
     }))
+}
+
+fn get_frame_extents(
+    conn: &xcb::Connection,
+    atoms: &Atoms,
+    w: &x::Window,
+) -> xcb::Result<Extents> {
+    let extentsprop = conn.wait_for_reply(conn.send_request(&x::GetProperty {
+        window: *w,
+        delete: false,
+        property: atoms.net_frame_extents,
+        r#type: x::ATOM_CARDINAL,
+        long_offset: 0,
+        long_length: 512,
+    }))?;
+    let v: &[u32] = extentsprop.value();
+    Ok(Extents {
+        left: v[0] as u16,
+        right: v[1] as u16,
+        top: v[2] as u16,
+        bottom: v[3] as u16,
+    })
 }
 
 fn compute_target_bounds(

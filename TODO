@@ -1,3 +1,2 @@
-- handle _NET_FRAME_EXTENT
 - handle _GTK_FRAME_EXTENT
 - cleanup left/right cycling
