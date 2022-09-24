@@ -18,6 +18,7 @@ xcb::atoms_struct! {
         pub net_active_window => b"_NET_ACTIVE_WINDOW",
 
         pub net_frame_extents => b"_NET_FRAME_EXTENTS",
+        pub gtk_frame_extents => b"_GTK_FRAME_EXTENTS",
     }
 }
 
@@ -425,21 +426,54 @@ fn get_window_geometry(conn: &xcb::Connection, w: &x::Window) -> xcb::Result<x::
 }
 
 fn get_frame_extents(conn: &xcb::Connection, atoms: &Atoms, w: &x::Window) -> xcb::Result<Extents> {
+    let net_extents = get_frame_extents_prop(conn, atoms.net_frame_extents, w)?;
+    let gtk_extents = get_frame_extents_prop(conn, atoms.gtk_frame_extents, w)?;
+    Ok(Extents {
+        left: net_extents.left - gtk_extents.left,
+        right: net_extents.right - gtk_extents.right,
+        top: net_extents.top - gtk_extents.top,
+        bottom: net_extents.bottom - gtk_extents.bottom,
+    })
+}
+
+fn get_frame_extents_prop(
+    conn: &xcb::Connection,
+    prop: x::Atom,
+    w: &x::Window,
+) -> xcb::Result<Extents> {
     let extentsprop = conn.wait_for_reply(conn.send_request(&x::GetProperty {
         window: *w,
         delete: false,
-        property: atoms.net_frame_extents,
+        property: prop,
         r#type: x::ATOM_CARDINAL,
         long_offset: 0,
         long_length: 512,
     }))?;
-    let v: &[u32] = extentsprop.value();
-    Ok(Extents {
-        left: v[0] as i16,
-        right: v[1] as i16,
-        top: v[2] as i16,
-        bottom: v[3] as i16,
-    })
+
+    let extents = match extentsprop.r#type() {
+        x::ATOM_CARDINAL => {
+            let v: &[u32] = extentsprop.value();
+            Extents {
+                left: v[0] as i16,
+                right: v[1] as i16,
+                top: v[2] as i16,
+                bottom: v[3] as i16,
+            }
+        }
+        _ => {
+            debug!("{:?} has no extents {:?}, assuming zero", w, prop);
+            Extents {
+                left: 0,
+                right: 0,
+                top: 0,
+                bottom: 0,
+            }
+        }
+    };
+
+    debug!("{:?} extents {:?}: {:?}", w, prop, extents);
+
+    Ok(extents)
 }
 
 fn compute_target_bounds(
