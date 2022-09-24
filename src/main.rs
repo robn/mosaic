@@ -71,16 +71,16 @@ enum TargetArgs {
 struct Bounds {
     x: i16,
     y: i16,
-    w: u16,
-    h: u16,
+    w: i16,
+    h: i16,
 }
 
 #[derive(Debug)]
 struct Extents {
-    left: u16,
-    right: u16,
-    top: u16,
-    bottom: u16,
+    left: i16,
+    right: i16,
+    top: i16,
+    bottom: i16,
 }
 
 fn main() -> xcb::Result<()> {
@@ -152,8 +152,8 @@ fn main() -> xcb::Result<()> {
         let root_bounds = Bounds {
             x: root_geom.x(),
             y: root_geom.y(),
-            w: root_geom.width(),
-            h: root_geom.height(),
+            w: root_geom.width() as i16,
+            h: root_geom.height() as i16,
         };
         debug!("root bounds: {:?}", root_bounds);
 
@@ -167,7 +167,7 @@ fn main() -> xcb::Result<()> {
 
                         // XXX hardcoded for my single top bar
                         bounds.y = geom.height() as i16;
-                        bounds.h -= geom.height();
+                        bounds.h -= geom.height() as i16;
 
                         /* XXX actually do magic box intersection shit
                         let b = Bounds {
@@ -233,8 +233,8 @@ fn main() -> xcb::Result<()> {
         Bounds {
             x: xlate.dst_x(),
             y: xlate.dst_y(),
-            w: geom.width(),
-            h: geom.height(),
+            w: geom.width() as i16,
+            h: geom.height() as i16,
         }
     };
     debug!("window bounds: {:?}", window_bounds);
@@ -243,8 +243,8 @@ fn main() -> xcb::Result<()> {
     debug!("frame extents: {:?}", frame_extents);
 
     let offset_window_bounds = Bounds {
-        x: window_bounds.x - frame_extents.left as i16,
-        y: window_bounds.y - frame_extents.top as i16,
+        x: window_bounds.x - frame_extents.left,
+        y: window_bounds.y - frame_extents.top,
         w: window_bounds.w + frame_extents.left + frame_extents.right,
         h: window_bounds.h + frame_extents.top + frame_extents.bottom,
     };
@@ -265,10 +265,10 @@ fn main() -> xcb::Result<()> {
     conn.send_request(&x::ConfigureWindow {
         window: *w,
         value_list: &[
-            x::ConfigWindow::X(final_bounds.x.into()),
-            x::ConfigWindow::Y(final_bounds.y.into()),
-            x::ConfigWindow::Width(final_bounds.w.into()),
-            x::ConfigWindow::Height(final_bounds.h.into()),
+            x::ConfigWindow::X(final_bounds.x as i32),
+            x::ConfigWindow::Y(final_bounds.y as i32),
+            x::ConfigWindow::Width(final_bounds.w as u32),
+            x::ConfigWindow::Height(final_bounds.h as u32),
         ],
     });
     conn.flush()?;
@@ -424,11 +424,7 @@ fn get_window_geometry(conn: &xcb::Connection, w: &x::Window) -> xcb::Result<x::
     }))
 }
 
-fn get_frame_extents(
-    conn: &xcb::Connection,
-    atoms: &Atoms,
-    w: &x::Window,
-) -> xcb::Result<Extents> {
+fn get_frame_extents(conn: &xcb::Connection, atoms: &Atoms, w: &x::Window) -> xcb::Result<Extents> {
     let extentsprop = conn.wait_for_reply(conn.send_request(&x::GetProperty {
         window: *w,
         delete: false,
@@ -439,10 +435,10 @@ fn get_frame_extents(
     }))?;
     let v: &[u32] = extentsprop.value();
     Ok(Extents {
-        left: v[0] as u16,
-        right: v[1] as u16,
-        top: v[2] as u16,
-        bottom: v[3] as u16,
+        left: v[0] as i16,
+        right: v[1] as i16,
+        top: v[2] as i16,
+        bottom: v[3] as i16,
     })
 }
 
@@ -457,7 +453,7 @@ fn compute_target_bounds(
     Bounds { x, y, w, h }
 }
 
-fn compute_target_horiz_bounds(current: &Bounds, usable: &Bounds, horiz: HorizSpec) -> (i16, u16) {
+fn compute_target_horiz_bounds(current: &Bounds, usable: &Bounds, horiz: HorizSpec) -> (i16, i16) {
     match horiz {
         HorizSpec::Current => (current.x, current.w),
 
@@ -510,7 +506,7 @@ fn compute_target_horiz_bounds(current: &Bounds, usable: &Bounds, horiz: HorizSp
     }
 }
 
-fn compute_target_vert_bounds(current: &Bounds, usable: &Bounds, vert: VertSpec) -> (i16, u16) {
+fn compute_target_vert_bounds(current: &Bounds, usable: &Bounds, vert: VertSpec) -> (i16, i16) {
     match vert {
         VertSpec::Current => (current.y, current.h),
         VertSpec::Top => (usable.y, usable.h.div_euclid(2)),
