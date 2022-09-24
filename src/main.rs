@@ -4,21 +4,21 @@ use xcb::{x, Xid};
 
 xcb::atoms_struct! {
     #[derive(Copy, Clone, Debug)]
-    pub(crate) struct Atoms {
-        pub utf8_string => b"UTF8_STRING",
+    struct Atoms {
+        utf8_string => b"UTF8_STRING",
 
-        pub wm_state => b"WM_STATE",
+        wm_state => b"WM_STATE",
 
-        pub net_wm_name => b"_NET_WM_NAME",
+        net_wm_name => b"_NET_WM_NAME",
 
-        pub net_wm_window_type => b"_NET_WM_WINDOW_TYPE",
-        pub net_wm_window_type_normal => b"_NET_WM_WINDOW_TYPE_NORMAL",
-        pub net_wm_window_type_dock => b"_NET_WM_WINDOW_TYPE_DOCK",
+        net_wm_window_type => b"_NET_WM_WINDOW_TYPE",
+        net_wm_window_type_normal => b"_NET_WM_WINDOW_TYPE_NORMAL",
+        net_wm_window_type_dock => b"_NET_WM_WINDOW_TYPE_DOCK",
 
-        pub net_active_window => b"_NET_ACTIVE_WINDOW",
+        net_active_window => b"_NET_ACTIVE_WINDOW",
 
-        pub net_frame_extents => b"_NET_FRAME_EXTENTS",
-        pub gtk_frame_extents => b"_GTK_FRAME_EXTENTS",
+        net_frame_extents => b"_NET_FRAME_EXTENTS",
+        gtk_frame_extents => b"_GTK_FRAME_EXTENTS",
     }
 }
 
