@@ -5,11 +5,7 @@ use xcb::{x, Xid};
 xcb::atoms_struct! {
     #[derive(Copy, Clone, Debug)]
     struct Atoms {
-        utf8_string => b"UTF8_STRING",
-
         wm_state => b"WM_STATE",
-
-        net_wm_name => b"_NET_WM_NAME",
 
         net_wm_window_type => b"_NET_WM_WINDOW_TYPE",
         net_wm_window_type_normal => b"_NET_WM_WINDOW_TYPE_NORMAL",
@@ -113,7 +109,6 @@ fn main() -> xcb::Result<()> {
     // all the on-screen windows
     // XXX same workspace: _NET_WM_DESKTOP(CARDINAL)
     let all_windows = get_visible_windows(&conn, &atoms, screen.root())?;
-    //debug!("{:#?}", all_windows);
 
     // split into regular windows that we can operate on, and special windows that we should try
     // not to cover
@@ -274,100 +269,6 @@ fn main() -> xcb::Result<()> {
     });
     conn.flush()?;
 
-    /*
-    dock_windows.iter().for_each(|&w| {
-        let nameprop_cookie = conn.send_request(&x::GetProperty {
-            window: w,
-            delete: false,
-            property: atoms.net_wm_name,
-            r#type: atoms.utf8_string,
-            long_offset: 0,
-            long_length: 512,
-        });
-        let typeprop_cookie = conn.send_request(&x::GetProperty {
-            window: w,
-            delete: false,
-            property: atoms.net_wm_window_type,
-            r#type: x::ATOM_ANY,
-            long_offset: 0,
-            long_length: 512,
-        });
-
-        let name = match conn.wait_for_reply(nameprop_cookie) {
-            Ok(nameprop) => String::from_utf8(nameprop.value().to_vec()).expect("[invalid]"),
-            Err(_) => "[error]".to_string(),
-        };
-        let r#type = match conn.wait_for_reply(typeprop_cookie) {
-            Ok(typeprop) => typeprop.value()[0],
-            Err(_) => x::ATOM_NONE,
-        };
-        debug!("{:?} name {:?} type {:?}", w, name, r#type);
-    });
-    */
-
-    /*
-    all_windows.iter().for_each(|(id, &w)| {
-        let nameprop_cookie = conn.send_request(&x::GetProperty {
-            window: w,
-            delete: false,
-            property: atoms.net_wm_name,
-            r#type: atoms.utf8_string,
-            long_offset: 0,
-            long_length: 512,
-        });
-        if let Ok(nameprop) = conn.wait_for_reply(nameprop_cookie) {
-            let name = std::str::from_utf8(nameprop.value()).expect("[invalid]");
-            debug!("window {:?}, name {:?}", w, name);
-        }
-    });
-    */
-    /*
-    let attrs = get_window_attributes(&conn, w)?;
-    debug!("window {:?}, attrs {:#?}", w, attrs);
-
-    let geom = get_window_geometry(&conn, w)?;
-    debug!("window {:?}, geom {:#?}", w, geom);
-
-    let xlate_cookie = conn.send_request(&x::TranslateCoordinates {
-        src_window: *w,
-        dst_window: screen.root(),
-        src_x: 0,
-        src_y: 0,
-    });
-    let xlate = conn.wait_for_reply(xlate_cookie)?;
-    debug!("window {:?}, xlate {:#?}", w, xlate);
-    */
-
-    /*
-    conn.send_request(&x::ConfigureWindow {
-        window: *w,
-        value_list: &[
-            x::ConfigWindow::X(5),
-            x::ConfigWindow::Y(56),
-        ],
-    });
-    conn.flush()?;
-    */
-
-    /*
-    let prop_cookie = conn.send_request(&x::ListProperties { window: *w });
-    if let Ok(props) = conn.wait_for_reply(prop_cookie) {
-        debug!("window {:?}, props {:#?}", w, props);
-    }
-    */
-
-    /*
-    let typeprop = conn.wait_for_reply(conn.send_request(&x::GetProperty {
-        window: *w,
-        delete: false,
-        property: atoms.net_wm_window_type,
-        r#type: x::ATOM_ANY,
-        long_offset: 0,
-        long_length: 512,
-    }))?;
-    debug!("{:#?}", typeprop);
-    */
-
     Ok(())
 }
 
@@ -410,13 +311,6 @@ fn get_visible_windows(
     }
 
     Ok(windows)
-}
-
-fn get_window_attributes(
-    conn: &xcb::Connection,
-    w: &x::Window,
-) -> xcb::Result<x::GetWindowAttributesReply> {
-    conn.wait_for_reply(conn.send_request(&x::GetWindowAttributes { window: *w }))
 }
 
 fn get_window_geometry(conn: &xcb::Connection, w: &x::Window) -> xcb::Result<x::GetGeometryReply> {
