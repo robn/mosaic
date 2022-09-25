@@ -149,7 +149,13 @@ fn main() -> xcb::Result<()> {
         })
         .map(|(w, typeprop_cookie)| {
             let typ = match conn.wait_for_reply(typeprop_cookie) {
-                Ok(typeprop) => typeprop.value()[0],
+                Ok(typeprop) => match typeprop.length() {
+                    // XXX some clients (Spotify) do not set a _NET_WM_WINDOW_TYPE at all. Probably
+                    // need to check WM_STATE for these (can't just take everything, all structural
+                    // windows will not have that prop either)
+                    0 => x::ATOM_NONE,
+                    _ => typeprop.value()[0],
+                },
                 Err(_) => x::ATOM_NONE,
             };
             (w, typ)
