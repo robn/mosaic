@@ -30,6 +30,9 @@ struct RootArgs {
     #[clap(long, group = "target")]
     active: bool,
 
+    #[clap(long, group = "target")]
+    select: bool,
+
     #[clap(long, value_enum)]
     horiz: HorizSpec,
 
@@ -63,6 +66,7 @@ enum VertSpec {
 enum TargetArgs {
     None,
     Id(u32),
+    Select,
     Active,
 }
 
@@ -109,6 +113,8 @@ fn main() -> xcb::Result<()> {
         TargetArgs::Id(id)
     } else if args.active {
         TargetArgs::Active
+    } else if args.select {
+        TargetArgs::Select
     } else {
         TargetArgs::None
     };
@@ -231,6 +237,7 @@ fn main() -> xcb::Result<()> {
             }))?;
             activeprop.value()[0]
         }
+        TargetArgs::Select => select_window(&conn, &atoms, screen.root())?,
         TargetArgs::None => unreachable!(),
     };
     debug!("requested window id: {}", id);
@@ -417,6 +424,48 @@ fn get_frame_extents_prop(
     debug!("{:?} extents {:?}: {:?}", w, prop, extents);
 
     Ok(extents)
+}
+
+fn select_window(conn: &xcb::Connection, atoms: &Atoms, root: x::Window) -> xcb::Result<u32> {
+    conn.wait_for_reply(conn.send_request(&x::GrabPointer {
+        owner_events: false,
+        grab_window: root,
+        event_mask: x::EventMask::BUTTON_PRESS | x::EventMask::BUTTON_RELEASE,
+        pointer_mode: x::GrabMode::Sync,
+        keyboard_mode: x::GrabMode::Async,
+        confine_to: root,
+        cursor: x::CURSOR_NONE,
+        time: x::CURRENT_TIME,
+    }))?;
+
+    let selected = loop {
+        conn.send_request(&x::AllowEvents {
+            mode: x::Allow::SyncPointer,
+            time: x::CURRENT_TIME,
+        });
+        conn.flush()?;
+
+        if let xcb::Event::X(x::Event::ButtonPress(ev)) = conn.wait_for_event()? {
+            let w = ev.child();
+            if !w.is_none() {
+                break w;
+            }
+        }
+    };
+
+    conn.send_request(&x::UngrabPointer {
+        time: x::CURRENT_TIME,
+    });
+    conn.flush()?;
+
+    let subwindows = get_visible_windows(conn, atoms, selected)?;
+
+    let window = match subwindows.is_empty() {
+        true => selected,
+        false => subwindows[0],
+    };
+
+    Ok(window.resource_id())
 }
 
 fn compute_target_bounds(
