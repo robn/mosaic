@@ -3,3 +3,4 @@
 - cleanup left/right cycling
 - dock window intersection
 - only consider windows on this workspace
+- select window
