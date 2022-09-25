@@ -15,6 +15,8 @@ xcb::atoms_struct! {
 
         net_frame_extents => b"_NET_FRAME_EXTENTS",
         gtk_frame_extents => b"_GTK_FRAME_EXTENTS",
+
+        net_moveresize_window => b"_NET_MOVERESIZE_WINDOW",
     }
 }
 
@@ -78,6 +80,26 @@ struct Extents {
     right: i16,
     top: i16,
     bottom: i16,
+}
+
+bitflags::bitflags! {
+    struct MoveResizeWindowFlags: u32 {
+        const GRAVITY_IMPLIED    = 0;
+        const GRAVITY_NORTH_WEST = 1;
+        const GRAVITY_NORTH      = 2;
+        const GRAVITY_NORTH_EAST = 3;
+        const GRAVITY_WEST       = 4;
+        const GRAVITY_CENTER     = 5;
+        const GRAVITY_EAST       = 6;
+        const GRAVITY_SOUTH_WEST = 7;
+        const GRAVITY_SOUTH      = 8;
+        const GRAVITY_SOUTH_EAST = 9;
+        const GRAVITY_STATIC     = 10;
+        const X                  = 1 << 8;
+        const Y                  = 1 << 9;
+        const WIDTH              = 1 << 10;
+        const HEIGHT             = 1 << 11;
+    }
 }
 
 fn main() -> xcb::Result<()> {
@@ -251,22 +273,37 @@ fn main() -> xcb::Result<()> {
     debug!("target bounds: {:?}", target_bounds);
 
     let final_bounds = Bounds {
-        x: target_bounds.x + frame_extents.left as i16,
-        y: target_bounds.y + frame_extents.top as i16,
+        x: target_bounds.x,
+        y: target_bounds.y,
         w: target_bounds.w - frame_extents.left - frame_extents.right,
         h: target_bounds.h - frame_extents.top - frame_extents.bottom,
     };
     debug!("final bounds: {:?}", final_bounds);
 
-    conn.send_request(&x::ConfigureWindow {
-        window: *w,
-        value_list: &[
-            x::ConfigWindow::X(final_bounds.x as i32),
-            x::ConfigWindow::Y(final_bounds.y as i32),
-            x::ConfigWindow::Width(final_bounds.w as u32),
-            x::ConfigWindow::Height(final_bounds.h as u32),
-        ],
+    let ev = x::ClientMessageEvent::new(
+        *w,
+        atoms.net_moveresize_window,
+        x::ClientMessageData::Data32([
+            (MoveResizeWindowFlags::X
+                | MoveResizeWindowFlags::Y
+                | MoveResizeWindowFlags::WIDTH
+                | MoveResizeWindowFlags::HEIGHT
+                | MoveResizeWindowFlags::GRAVITY_NORTH_WEST)
+                .bits(),
+            final_bounds.x as u32,
+            final_bounds.y as u32,
+            final_bounds.w as u32,
+            final_bounds.h as u32,
+        ]),
+    );
+
+    conn.send_request(&x::SendEvent {
+        propagate: false,
+        destination: x::SendEventDest::Window(screen.root()),
+        event_mask: x::EventMask::SUBSTRUCTURE_REDIRECT | x::EventMask::SUBSTRUCTURE_NOTIFY,
+        event: &ev,
     });
+
     conn.flush()?;
 
     Ok(())
@@ -321,6 +358,7 @@ fn get_window_geometry(conn: &xcb::Connection, w: &x::Window) -> xcb::Result<x::
 
 fn get_frame_extents(conn: &xcb::Connection, atoms: &Atoms, w: &x::Window) -> xcb::Result<Extents> {
     let net_extents = get_frame_extents_prop(conn, atoms.net_frame_extents, w)?;
+    /*
     let gtk_extents = get_frame_extents_prop(conn, atoms.gtk_frame_extents, w)?;
     Ok(Extents {
         left: net_extents.left - gtk_extents.left,
@@ -328,6 +366,8 @@ fn get_frame_extents(conn: &xcb::Connection, atoms: &Atoms, w: &x::Window) -> xc
         top: net_extents.top - gtk_extents.top,
         bottom: net_extents.bottom - gtk_extents.bottom,
     })
+    */
+    Ok(net_extents)
 }
 
 fn get_frame_extents_prop(
