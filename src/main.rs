@@ -427,6 +427,27 @@ fn get_frame_extents_prop(
 }
 
 fn select_window(conn: &xcb::Connection, atoms: &Atoms, root: x::Window) -> xcb::Result<u32> {
+    let font = conn.generate_id();
+    conn.send_request(&x::OpenFont {
+        fid: font,
+        name: b"cursor",
+    });
+
+    let cursor = conn.generate_id();
+    conn.send_request(&x::CreateGlyphCursor {
+        cid: cursor,
+        source_font: font,
+        mask_font: font,
+        source_char: 34, // XC_crosshair
+        mask_char: 35,
+        fore_red: 0x0000,
+        fore_green: 0x0000,
+        fore_blue: 0x0000,
+        back_red: 0xffff,
+        back_green: 0xffff,
+        back_blue: 0xffff,
+    });
+
     conn.wait_for_reply(conn.send_request(&x::GrabPointer {
         owner_events: false,
         grab_window: root,
@@ -434,7 +455,7 @@ fn select_window(conn: &xcb::Connection, atoms: &Atoms, root: x::Window) -> xcb:
         pointer_mode: x::GrabMode::Sync,
         keyboard_mode: x::GrabMode::Async,
         confine_to: root,
-        cursor: x::CURSOR_NONE,
+        cursor: cursor,
         time: x::CURRENT_TIME,
     }))?;
 
