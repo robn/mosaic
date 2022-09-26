@@ -4,4 +4,3 @@
 - dock window intersection
 - only consider windows on this workspace
 - select window
-- handle clients without _NET_WM_WINDOW_TYPE

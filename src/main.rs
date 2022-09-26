@@ -150,13 +150,16 @@ fn main() -> xcb::Result<()> {
         .map(|(w, typeprop_cookie)| {
             let typ = match conn.wait_for_reply(typeprop_cookie) {
                 Ok(typeprop) => match typeprop.length() {
-                    // XXX some clients (Spotify) do not set a _NET_WM_WINDOW_TYPE at all. Probably
-                    // need to check WM_STATE for these (can't just take everything, all structural
-                    // windows will not have that prop either)
-                    0 => x::ATOM_NONE,
+                    // some clients (Spotify) do not set a _NET_WM_WINDOW_TYPE at all. we already
+                    // know this window has WM_STATE NormalState because we filtered for those
+                    // windows earlier, so just pass it through as a TYPE_NORMAL window
+                    0 => atoms.net_wm_window_type_normal,
                     _ => typeprop.value()[0],
                 },
-                Err(_) => x::ATOM_NONE,
+                Err(e) => {
+                    debug!("{:?} couldn't get window type: {}", w, e);
+                    atoms.net_wm_window_type_normal
+                }
             };
             (w, typ)
         })
