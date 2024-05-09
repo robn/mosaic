@@ -10,6 +10,7 @@ xcb::atoms_struct! {
         net_wm_window_type => b"_NET_WM_WINDOW_TYPE",
         net_wm_window_type_normal => b"_NET_WM_WINDOW_TYPE_NORMAL",
         net_wm_window_type_dock => b"_NET_WM_WINDOW_TYPE_DOCK",
+        net_wm_window_type_desktop => b"_NET_WM_WINDOW_TYPE_DESKTOP",
 
         net_active_window => b"_NET_ACTIVE_WINDOW",
 
@@ -140,7 +141,7 @@ fn main() -> xcb::Result<()> {
 
     // split into regular windows that we can operate on, and special windows that we should try
     // not to cover
-    let (normal_windows, dock_windows) = all_windows
+    let (normal_windows, dock_windows, desktop_windows) = all_windows
         .iter()
         .map(|&w| {
             let typeprop_cookie = conn.send_request(&x::GetProperty {
@@ -169,19 +170,29 @@ fn main() -> xcb::Result<()> {
             };
             (w, typ)
         })
-        .fold((vec![], vec![]), |(mut normal, mut dock), (w, typ)| {
-            if typ == atoms.net_wm_window_type_normal {
-                normal.push(w);
-            } else if typ == atoms.net_wm_window_type_dock {
-                dock.push(w);
-            }
-            (normal, dock)
-        });
+        .fold(
+            (vec![], vec![], vec![]),
+            |(mut normal, mut dock, mut desktop), (w, typ)| {
+                if typ == atoms.net_wm_window_type_normal {
+                    normal.push(w);
+                } else if typ == atoms.net_wm_window_type_dock {
+                    dock.push(w);
+                } else if typ == atoms.net_wm_window_type_desktop {
+                    desktop.push(w);
+                }
+                (normal, dock, desktop)
+            },
+        );
+
+    let ref_window = match desktop_windows.first() {
+        Some(w) => *w,
+        None => screen.root(),
+    };
 
     // figure out the usable bounds
     let usable_bounds = {
         // first, the root
-        let root_geom = get_window_geometry(&conn, &screen.root())?;
+        let root_geom = get_window_geometry(&conn, &ref_window)?;
         let root_bounds = Bounds {
             x: root_geom.x(),
             y: root_geom.y(),
