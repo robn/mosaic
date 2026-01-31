@@ -135,6 +135,8 @@ fn main() -> xcb::Result<()> {
         .unwrap()
         .to_owned();
 
+    // stage 1: discover all visible windows
+
     // all the on-screen windows
     // XXX same workspace: _NET_WM_DESKTOP(CARDINAL)
     let all_windows = get_visible_windows(&conn, &atoms, screen.root())?;
@@ -184,57 +186,11 @@ fn main() -> xcb::Result<()> {
             },
         );
 
-    let ref_window = match desktop_windows.first() {
-        Some(w) => *w,
-        None => screen.root(),
-    };
-
-    // figure out the usable bounds
-    let usable_bounds = {
-        // first, the root
-        let root_geom = get_window_geometry(&conn, &ref_window)?;
-        let root_bounds = Bounds {
-            x: root_geom.x(),
-            y: root_geom.y(),
-            w: root_geom.width() as i16,
-            h: root_geom.height() as i16,
-        };
-        debug!("root bounds: {:?}", root_bounds);
-
-        // top bar since that's what I actually have
-        dock_windows
-            .iter()
-            .fold(Ok::<Bounds, xcb::Error>(root_bounds), |bounds, w| {
-                match bounds {
-                    Ok(mut bounds) => {
-                        let geom = get_window_geometry(&conn, w)?;
-
-                        // XXX hardcoded for my single top bar
-                        bounds.y = geom.height() as i16;
-                        bounds.h -= geom.height() as i16;
-
-                        /* XXX actually do magic box intersection shit
-                        let b = Bounds {
-                            x: geom.x(),
-                            y: geom.y(),
-                            w: geom.width(),
-                            h: geom.height(),
-                        };
-
-                        debug!("dock bounds: {:?}", b);
-
-                        ... what now?
-                        */
-
-                        Ok(bounds)
-                    }
-                    e => e,
-                }
-            })?
-    };
-    debug!("usable screen bounds: {:?}", usable_bounds);
-
-    // figure out the window they asked for
+    // stage 2: figure out the window they asked for, and fetch/compute its
+    // size, frame extents, etc - everything we need to figure out how to place it
+    //
+    // we have to do this first, because we need its position so we can decide which desktop to use
+    // as a reference
     let id = match target_arg {
         TargetArgs::Id(id) => id,
         TargetArgs::Active => {
@@ -294,6 +250,119 @@ fn main() -> xcb::Result<()> {
         h: window_bounds.h + frame_extents.top + frame_extents.bottom,
     };
     debug!("offset window bounds: {:?}", offset_window_bounds);
+
+    // stage 3: find a desktop or root window to use as a positioning reference. we use the
+    // selected window position to find the desktop "under" the window. if we don't find one that
+    // will work, use the root
+
+    /*
+    let ref_window = match desktop_windows.iter().filter(|w| {
+        let r
+        debug!("window bou?");
+    }).next() {
+        Some(w) => *w,
+        None => screen.root(),
+    };
+    */
+
+    // figure out the usable bounds
+    let usable_bounds =
+        {
+            // first, the root bounds. if we don't have any desktop windows or
+            // the window is somehow not over any of them, this is our fallback
+            // reference
+            let root_geom = get_window_geometry(&conn, &screen.root())?;
+            let root_bounds = Bounds {
+                x: root_geom.x(),
+                y: root_geom.y(),
+                w: root_geom.width() as i16,
+                h: root_geom.height() as i16,
+            };
+            debug!("root bounds: {:?}", root_bounds);
+
+            let desktop_bounds = desktop_windows.iter().fold(
+                Ok::<Bounds, xcb::Error>(root_bounds),
+                |bounds, w| match bounds {
+                    Ok(mut bounds) => {
+                        let geom = get_window_geometry(&conn, w)?;
+                        let xlate =
+                            conn.wait_for_reply(conn.send_request(&x::TranslateCoordinates {
+                                src_window: *w,
+                                dst_window: screen.root(),
+                                src_x: 0,
+                                src_y: 0,
+                            }))?;
+
+                        debug!(
+                            "considering desktop bounds: {} {} {} {}",
+                            xlate.dst_x(),
+                            xlate.dst_y(),
+                            geom.width(),
+                            geom.height()
+                        );
+
+                        // note: only considering the window x pos for desktop check, because
+                        // I only have horizontal monitor layouts. if I ever had a vertical, would
+                        // probably need to consider vertical too, but it gets a little weird with
+                        // negatives
+                        //
+                        // at least maybe start by including these:
+                        //    && xlate.dst_y() <= window_bounds.y
+                        //    && xlate.dst_y() + geom.height() as i16 >= window_bounds.y
+                        //
+                        // actually, now I think about it, this should be using x pos for horiz
+                        // positioning, y for vertical, but that needs more though. obviously this
+                        // program is now creaking somewhat with multiple monitors; right now I
+                        // just need to keep it running while I understand how to use this
+                        // ultrawide monitor -- robn, 2026-01-31
+                        if xlate.dst_x() <= window_bounds.x
+                            && xlate.dst_x() + geom.width() as i16 >= window_bounds.x
+                        {
+                            bounds.x = xlate.dst_x();
+                            bounds.y = xlate.dst_y();
+                            bounds.w = geom.width() as i16;
+                            bounds.h = geom.height() as i16;
+                        }
+
+                        Ok(bounds)
+                    }
+                    e => e,
+                },
+            )?;
+            debug!("desktop bounds: {:?}", desktop_bounds);
+
+            // top bar since that's what I actually have
+            dock_windows
+                .iter()
+                .fold(Ok::<Bounds, xcb::Error>(desktop_bounds), |bounds, w| {
+                    match bounds {
+                        Ok(mut bounds) => {
+                            let geom = get_window_geometry(&conn, w)?;
+
+                            // XXX hardcoded for my single top bar
+                            bounds.y = geom.height() as i16;
+                            bounds.h -= geom.height() as i16;
+
+                            /* XXX actually do magic box intersection shit
+                            let b = Bounds {
+                                x: geom.x(),
+                                y: geom.y(),
+                                w: geom.width(),
+                                h: geom.height(),
+                            };
+
+                            debug!("dock bounds: {:?}", b);
+
+                            ... what now?
+                            */
+
+                            Ok(bounds)
+                        }
+                        e => e,
+                    }
+                })?
+        };
+    debug!("usable screen bounds: {:?}", usable_bounds);
 
     let target_bounds =
         compute_target_bounds(&offset_window_bounds, &usable_bounds, args.horiz, args.vert);
