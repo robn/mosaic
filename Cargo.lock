@@ -158,6 +158,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "euclid"
+version = "0.22.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df61bf483e837f88d5c2291dcf55c67be7e676b3a51acc48db3a7b163b91ed63"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -219,6 +228,7 @@ dependencies = [
  "clap",
  "clap-num",
  "env_logger",
+ "euclid",
  "log",
  "xcb",
 ]

@@ -1,5 +1,6 @@
 use clap::{ArgGroup, Parser, ValueEnum};
 use log::{debug, warn};
+use std::collections::{BTreeMap, BTreeSet};
 use xcb::{x, Xid};
 
 xcb::atoms_struct! {
@@ -18,6 +19,8 @@ xcb::atoms_struct! {
         gtk_frame_extents => b"_GTK_FRAME_EXTENTS",
 
         net_moveresize_window => b"_NET_MOVERESIZE_WINDOW",
+
+        net_wm_name => b"_NET_WM_NAME",
     }
 }
 
@@ -71,7 +74,14 @@ enum TargetArgs {
     Active,
 }
 
-#[derive(Debug)]
+struct RootSpace;
+type Rect = euclid::Rect<i16, RootSpace>;
+type Box2D = euclid::Box2D<i16, RootSpace>;
+type Vector2D = euclid::Vector2D<i16, RootSpace>;
+type SideOffsets2D = euclid::SideOffsets2D<i16, RootSpace>;
+
+/*
+#[derive(Clone, Copy, Debug)]
 struct Bounds {
     x: i16,
     y: i16,
@@ -86,6 +96,7 @@ struct Extents {
     top: i16,
     bottom: i16,
 }
+*/
 
 bitflags::bitflags! {
     struct MoveResizeWindowFlags: u32 {
@@ -107,6 +118,105 @@ bitflags::bitflags! {
     }
 }
 
+#[derive(Debug)]
+struct Window {
+    id: u32,
+    xw: x::Window,
+    geom: Rect,
+    typ: WindowType,
+}
+
+#[derive(Debug)]
+enum WindowType {
+    Normal,
+    Dock,
+    Desktop,
+    Root,
+}
+
+struct Context {
+    conn: xcb::Connection,
+    atoms: Atoms,
+    root: x::Window,
+}
+
+#[derive(Debug, Default)]
+struct WindowGroup {
+    windows: BTreeMap<u32, Window>,
+    root: Option<u32>,
+    desktop: BTreeSet<u32>,
+    dock: BTreeSet<u32>,
+    selectable: BTreeSet<u32>,
+    parents: BTreeMap<u32, u32>,
+}
+
+impl Context {
+    fn x_query_tree(&self, xw: x::Window) -> x::QueryTreeCookie {
+        self.conn.send_request(&x::QueryTree { window: xw })
+    }
+
+    fn x_get_geometry(&self, xw: x::Window) -> x::GetGeometryCookie {
+        self.conn.send_request(&x::GetGeometry {
+            drawable: x::Drawable::Window(xw),
+        })
+    }
+
+    fn x_get_property(&self, xw: x::Window, prop: x::Atom, ty: x::Atom) -> x::GetPropertyCookie {
+        self.conn.send_request(&x::GetProperty {
+            window: xw,
+            delete: false,
+            property: prop,
+            r#type: ty,
+            long_offset: 0,
+            long_length: 512,
+        })
+    }
+
+    fn _window_name(&self, w: &Window) -> xcb::Result<String> {
+        let name_prop = self.conn.wait_for_reply(self.x_get_property(
+            w.xw,
+            self.atoms.net_wm_name,
+            x::ATOM_ANY,
+        ))?;
+        Ok(String::from_utf8_lossy(name_prop.value()).to_string())
+    }
+
+    fn window_abs_xlate(&self, w: &Window, wg: &WindowGroup) -> Vector2D {
+        let mut id = w.id;
+        let mut geom = w.geom;
+        while id != self.root.resource_id() {
+            id = wg.parents[&id];
+            let w = &wg.windows[&id];
+            geom = geom.translate(w.geom.origin.to_vector());
+        }
+        geom.min() - w.geom.min()
+    }
+
+    fn window_frame_extents(&self, w: &Window, prop: x::Atom) -> xcb::Result<SideOffsets2D> {
+        let extents_prop =
+            self.conn
+                .wait_for_reply(self.x_get_property(w.xw, prop, x::ATOM_CARDINAL))?;
+
+        match extents_prop.r#type() {
+            x::ATOM_CARDINAL => {
+                let v: &[u32] = extents_prop.value();
+                // CSS order: top, right, bottom, left
+                // Cardinal order: left, right, bottom, top
+                Ok(SideOffsets2D::new(
+                    v[2] as i16,
+                    v[1] as i16,
+                    v[3] as i16,
+                    v[0] as i16,
+                ))
+            }
+            _ => {
+                debug!("window {} has no extents {:?}, assuming zero", w.id, prop);
+                Ok(SideOffsets2D::zero())
+            }
+        }
+    }
+}
+
 fn main() -> xcb::Result<()> {
     let args = RootArgs::parse();
 
@@ -122,399 +232,382 @@ fn main() -> xcb::Result<()> {
 
     env_logger::Builder::new().parse_default_env().init();
 
-    // connect to server
-    let (conn, scr_num) = xcb::Connection::connect(None)?;
+    let ctx = {
+        let (conn, scr_num) = xcb::Connection::connect(None)?;
 
-    let atoms = Atoms::intern_all(&conn)?;
+        let atoms = Atoms::intern_all(&conn)?;
 
-    // get screen handle
-    let screen = conn
-        .get_setup()
-        .roots()
-        .nth(scr_num as usize)
-        .unwrap()
-        .to_owned();
+        let root = conn
+            .get_setup()
+            .roots()
+            .nth(scr_num as usize)
+            .unwrap()
+            .to_owned()
+            .root();
 
+        Context { conn, atoms, root }
+    };
+
+    let wg = get_window_group(&ctx);
+    //debug!("{:#?}", wg);
+
+    for desktop_id in wg.desktop.iter() {
+        let desktop = &wg.windows[&desktop_id];
+        debug!("desktop geom: {:?}", desktop.geom);
+    }
+
+    /*
     // stage 1: discover all visible windows
 
     // all the on-screen windows
     // XXX same workspace: _NET_WM_DESKTOP(CARDINAL)
-    let all_windows = get_visible_windows(&conn, &atoms, screen.root())?;
+    let all_windows = get_visible_windows(&ctx);
+
+    //println!("{:#?}", all_windows);
 
     // split into regular windows that we can operate on, and special windows that we should try
     // not to cover
-    let (normal_windows, dock_windows, desktop_windows) = all_windows
-        .iter()
-        .map(|&w| {
-            let typeprop_cookie = conn.send_request(&x::GetProperty {
-                window: w,
-                delete: false,
-                property: atoms.net_wm_window_type,
-                r#type: x::ATOM_ANY,
-                long_offset: 0,
-                long_length: 512,
-            });
-            (w, typeprop_cookie)
-        })
-        .map(|(w, typeprop_cookie)| {
-            let typ = match conn.wait_for_reply(typeprop_cookie) {
-                Ok(typeprop) => match typeprop.length() {
-                    // some clients (Spotify) do not set a _NET_WM_WINDOW_TYPE at all. we already
-                    // know this window has WM_STATE NormalState because we filtered for those
-                    // windows earlier, so just pass it through as a TYPE_NORMAL window
-                    0 => atoms.net_wm_window_type_normal,
-                    _ => typeprop.value()[0],
-                },
-                Err(e) => {
-                    debug!("{:?} couldn't get window type: {}", w, e);
-                    atoms.net_wm_window_type_normal
-                }
-            };
-            (w, typ)
-        })
-        .fold(
-            (vec![], vec![], vec![]),
-            |(mut normal, mut dock, mut desktop), (w, typ)| {
-                if typ == atoms.net_wm_window_type_normal {
-                    normal.push(w);
-                } else if typ == atoms.net_wm_window_type_dock {
-                    dock.push(w);
-                } else if typ == atoms.net_wm_window_type_desktop {
-                    desktop.push(w);
-                }
-                (normal, dock, desktop)
-            },
-        );
+    let (normal_windows, dock_windows, desktop_windows, root_window) = all_windows.iter().fold(
+        (vec![], vec![], vec![], None),
+        |(mut normal, mut dock, mut desktop, mut root), w| {
+            match w.typ {
+                WindowType::Normal => normal.push(w),
+                WindowType::Dock => dock.push(w),
+                WindowType::Desktop => desktop.push(w),
+                WindowType::Root => root = Some(w),
+            }
+            (normal, dock, desktop, root)
+        },
+    );
+    */
 
     // stage 2: figure out the window they asked for, and fetch/compute its
     // size, frame extents, etc - everything we need to figure out how to place it
     //
     // we have to do this first, because we need its position so we can decide which desktop to use
     // as a reference
-    let id = match target_arg {
-        TargetArgs::Id(id) => id,
-        TargetArgs::Active => {
-            let activeprop = conn.wait_for_reply(conn.send_request(&x::GetProperty {
-                window: screen.root(),
-                delete: false,
-                property: atoms.net_active_window,
-                r#type: x::ATOM_WINDOW,
-                long_offset: 0,
-                long_length: 512,
-            }))?;
-            activeprop.value()[0]
-        }
-        TargetArgs::Select => select_window(&conn, &atoms, screen.root())?,
-        TargetArgs::None => unreachable!(),
-    };
-    debug!("requested window id: {}", id);
+    let target_id = 'target: {
+        let mut id = match target_arg {
+            TargetArgs::Id(id) => id,
+            TargetArgs::Active => {
+                let active_prop = ctx.conn.wait_for_reply(ctx.x_get_property(
+                    ctx.root,
+                    ctx.atoms.net_active_window,
+                    x::ATOM_WINDOW,
+                ))?;
+                active_prop.value()[0]
+            }
+            TargetArgs::Select => select_window(&ctx)?,
+            TargetArgs::None => unreachable!(),
+        };
 
-    // and match it to an actual window
-    let w = match normal_windows
+        if wg.selectable.contains(&id) {
+            break 'target id;
+        }
+
+        let orig_id = id;
+
+        while id > 0 && id != ctx.root.resource_id() {
+            debug!("requested window {} not selectable, checking parent", id);
+            id = wg.parents[&id];
+            if wg.selectable.contains(&id) {
+                debug!("parent window {} selectable, using it", id);
+                break 'target id;
+            }
+        }
+
+        if let Some(id) = wg
+            .parents
+            .iter()
+            .filter_map(
+                |(&cid, &pid)| match pid == orig_id && wg.selectable.contains(&cid) {
+                    true => Some(cid),
+                    false => None,
+                },
+            )
+            .next()
+        {
+            debug!("child window {} selectable, using it", id);
+            break 'target id;
+        }
+
+        warn!(
+            "couldn't resolve window id {} to a top client window",
+            orig_id
+        );
+        return Ok(());
+    };
+
+    debug!("target window id: {}", target_id);
+
+    let current_geom = wg.windows[&target_id].geom;
+    debug!("target geom: {:?}", current_geom);
+
+    let current_box = current_geom.to_box2d();
+    debug!("target current box: {:?}", current_box);
+
+    let frame_extents =
+        ctx.window_frame_extents(&wg.windows[&target_id], ctx.atoms.net_frame_extents)?;
+    debug!("target frame extents: {:?}", frame_extents);
+
+    let unframed_box = current_box.outer_box(frame_extents);
+    debug!("target unframed box: {:?}", unframed_box);
+
+    let current_box = unframed_box;
+
+    let avail_box = match wg
+        .desktop
         .iter()
-        .filter(|&w| w.resource_id() == id)
+        .filter_map(|&id| {
+            let desktop = wg.windows[&id]
+                .geom
+                .translate(ctx.window_abs_xlate(&wg.windows[&id], &wg))
+                .to_box2d();
+            debug!("desktop {} box: {:?}", id, desktop);
+            desktop.contains(current_box.min).then(|| {
+                debug!("target {} is on desktop {}", target_id, id);
+                desktop
+            })
+        })
         .next()
     {
-        Some(w) => w,
-        _ => {
-            warn!("requested window {} not found", id);
+        Some(desktop) => desktop,
+        None => {
+            warn!("couldn't determine desktop for window id {}", target_id);
             return Ok(());
         }
     };
 
-    // and get its bounds
-    let window_bounds = {
-        let geom = get_window_geometry(&conn, w)?;
-        let xlate = conn.wait_for_reply(conn.send_request(&x::TranslateCoordinates {
-            src_window: *w,
-            dst_window: screen.root(),
-            src_x: 0,
-            src_y: 0,
-        }))?;
-        Bounds {
-            x: xlate.dst_x(),
-            y: xlate.dst_y(),
-            w: geom.width() as i16,
-            h: geom.height() as i16,
+    debug!("initial avail box: {:?}", avail_box);
+
+    let avail_box = wg.dock.iter().fold(avail_box, |avail, &id| {
+        debug!("dock {} geom: {:?}", id, wg.windows[&id].geom);
+        let dock = wg.windows[&id]
+            .geom
+            .translate(ctx.window_abs_xlate(&wg.windows[&id], &wg))
+            .to_box2d();
+        debug!("dock {} box: {:?}", id, dock);
+        match avail.intersection(&dock) {
+            Some(overlap) if overlap == avail => {
+                debug!("dock {} covers avail area, ignoring it", id);
+                avail
+            }
+
+            // dock doesn't intersect the area, ignore it
+            None => {
+                debug!("dock {} is outside avail area, ignoring it", id);
+                avail
+            }
+
+            Some(overlap) => {
+                debug!(
+                    "dock {} overlaps avail, reducing (overlap {:?})",
+                    id, overlap
+                );
+
+                let mut regions = vec![];
+                if avail.min.x < overlap.min.x {
+                    // left of dock
+                    regions.push(Box2D::new(avail.min, (overlap.min.x, avail.max.y).into()));
+                }
+                if avail.max.x > overlap.max.x {
+                    // right of dock
+                    regions.push(Box2D::new((overlap.max.x, avail.min.y).into(), avail.max));
+                }
+                if avail.min.y < overlap.min.y {
+                    // above dock
+                    regions.push(Box2D::new(avail.min, (avail.max.x, overlap.min.y).into()));
+                }
+                if avail.max.y > overlap.max.y {
+                    // below dock
+                    regions.push(Box2D::new((avail.min.x, overlap.max.y).into(), avail.max));
+                }
+
+                // XXX guaranteed to have one. in some future nonsense, we'd select the "best" by
+                // some means. I don't do docks really though, so nothing for now
+                debug!("new avail regions (taking last): {:?}", regions);
+                regions.pop().unwrap()
+            }
         }
+    });
+
+    debug!("final avail box: {:?}", avail_box);
+
+    let new_box = compute_new_box(&current_box, &avail_box, args.horiz, args.vert);
+    debug!("target new unframed box: {:?}", new_box);
+
+    let framed_box = new_box.inner_box(frame_extents);
+    debug!("target new framed box: {:?}", framed_box);
+
+    let offset_box = framed_box.translate((-frame_extents.left, -frame_extents.top).into());
+    debug!("target new offset box: {:?}", offset_box);
+
+    let new_geom = offset_box.to_rect();
+    debug!("target new geom: {:?}", new_geom);
+
+    let ev = {
+        let target = &wg.windows[&target_id];
+
+        x::ClientMessageEvent::new(
+            target.xw,
+            ctx.atoms.net_moveresize_window,
+            x::ClientMessageData::Data32([
+                (MoveResizeWindowFlags::X
+                    | MoveResizeWindowFlags::Y
+                    | MoveResizeWindowFlags::WIDTH
+                    | MoveResizeWindowFlags::HEIGHT
+                    | MoveResizeWindowFlags::GRAVITY_NORTH_WEST)
+                    .bits(),
+                new_geom.origin.x as u32,
+                new_geom.origin.y as u32,
+                new_geom.size.width as u32,
+                new_geom.size.height as u32,
+            ]),
+        )
     };
-    debug!("window bounds: {:?}", window_bounds);
 
-    let frame_extents = get_frame_extents(&conn, &atoms, w)?;
-    debug!("frame extents: {:?}", frame_extents);
-
-    let offset_window_bounds = Bounds {
-        x: window_bounds.x - frame_extents.left,
-        y: window_bounds.y - frame_extents.top,
-        w: window_bounds.w + frame_extents.left + frame_extents.right,
-        h: window_bounds.h + frame_extents.top + frame_extents.bottom,
-    };
-    debug!("offset window bounds: {:?}", offset_window_bounds);
-
-    // stage 3: find a desktop or root window to use as a positioning reference. we use the
-    // selected window position to find the desktop "under" the window. if we don't find one that
-    // will work, use the root
-
-    /*
-    let ref_window = match desktop_windows.iter().filter(|w| {
-        let r
-        debug!("window bou?");
-    }).next() {
-        Some(w) => *w,
-        None => screen.root(),
-    };
-    */
-
-    // figure out the usable bounds
-    let usable_bounds =
-        {
-            // first, the root bounds. if we don't have any desktop windows or
-            // the window is somehow not over any of them, this is our fallback
-            // reference
-            let root_geom = get_window_geometry(&conn, &screen.root())?;
-            let root_bounds = Bounds {
-                x: root_geom.x(),
-                y: root_geom.y(),
-                w: root_geom.width() as i16,
-                h: root_geom.height() as i16,
-            };
-            debug!("root bounds: {:?}", root_bounds);
-
-            let desktop_bounds = desktop_windows.iter().fold(
-                Ok::<Bounds, xcb::Error>(root_bounds),
-                |bounds, w| match bounds {
-                    Ok(mut bounds) => {
-                        let geom = get_window_geometry(&conn, w)?;
-                        let xlate =
-                            conn.wait_for_reply(conn.send_request(&x::TranslateCoordinates {
-                                src_window: *w,
-                                dst_window: screen.root(),
-                                src_x: 0,
-                                src_y: 0,
-                            }))?;
-
-                        debug!(
-                            "considering desktop bounds: {} {} {} {}",
-                            xlate.dst_x(),
-                            xlate.dst_y(),
-                            geom.width(),
-                            geom.height()
-                        );
-
-                        // note: only considering the window x pos for desktop check, because
-                        // I only have horizontal monitor layouts. if I ever had a vertical, would
-                        // probably need to consider vertical too, but it gets a little weird with
-                        // negatives
-                        //
-                        // at least maybe start by including these:
-                        //    && xlate.dst_y() <= window_bounds.y
-                        //    && xlate.dst_y() + geom.height() as i16 >= window_bounds.y
-                        //
-                        // actually, now I think about it, this should be using x pos for horiz
-                        // positioning, y for vertical, but that needs more though. obviously this
-                        // program is now creaking somewhat with multiple monitors; right now I
-                        // just need to keep it running while I understand how to use this
-                        // ultrawide monitor -- robn, 2026-01-31
-                        if xlate.dst_x() <= window_bounds.x
-                            && xlate.dst_x() + geom.width() as i16 >= window_bounds.x
-                        {
-                            bounds.x = xlate.dst_x();
-                            bounds.y = xlate.dst_y();
-                            bounds.w = geom.width() as i16;
-                            bounds.h = geom.height() as i16;
-                        }
-
-                        Ok(bounds)
-                    }
-                    e => e,
-                },
-            )?;
-            debug!("desktop bounds: {:?}", desktop_bounds);
-
-            // top bar since that's what I actually have
-            dock_windows
-                .iter()
-                .fold(Ok::<Bounds, xcb::Error>(desktop_bounds), |bounds, w| {
-                    match bounds {
-                        Ok(mut bounds) => {
-                            let geom = get_window_geometry(&conn, w)?;
-
-                            // XXX hardcoded for my single top bar
-                            bounds.y = geom.height() as i16;
-                            bounds.h -= geom.height() as i16;
-
-                            /* XXX actually do magic box intersection shit
-                            let b = Bounds {
-                                x: geom.x(),
-                                y: geom.y(),
-                                w: geom.width(),
-                                h: geom.height(),
-                            };
-
-                            debug!("dock bounds: {:?}", b);
-
-                            ... what now?
-                            */
-
-                            Ok(bounds)
-                        }
-                        e => e,
-                    }
-                })?
-        };
-    debug!("usable screen bounds: {:?}", usable_bounds);
-
-    let target_bounds =
-        compute_target_bounds(&offset_window_bounds, &usable_bounds, args.horiz, args.vert);
-    debug!("target bounds: {:?}", target_bounds);
-
-    let final_bounds = Bounds {
-        x: target_bounds.x,
-        y: target_bounds.y,
-        w: target_bounds.w - frame_extents.left - frame_extents.right,
-        h: target_bounds.h - frame_extents.top - frame_extents.bottom,
-    };
-    debug!("final bounds: {:?}", final_bounds);
-
-    let ev = x::ClientMessageEvent::new(
-        *w,
-        atoms.net_moveresize_window,
-        x::ClientMessageData::Data32([
-            (MoveResizeWindowFlags::X
-                | MoveResizeWindowFlags::Y
-                | MoveResizeWindowFlags::WIDTH
-                | MoveResizeWindowFlags::HEIGHT
-                | MoveResizeWindowFlags::GRAVITY_NORTH_WEST)
-                .bits(),
-            final_bounds.x as u32,
-            final_bounds.y as u32,
-            final_bounds.w as u32,
-            final_bounds.h as u32,
-        ]),
-    );
-
-    conn.send_request(&x::SendEvent {
+    ctx.conn.send_request(&x::SendEvent {
         propagate: false,
-        destination: x::SendEventDest::Window(screen.root()),
+        destination: x::SendEventDest::Window(ctx.root),
         event_mask: x::EventMask::SUBSTRUCTURE_REDIRECT | x::EventMask::SUBSTRUCTURE_NOTIFY,
         event: &ev,
     });
 
-    conn.flush()?;
+    ctx.conn.flush()?;
 
     Ok(())
 }
 
 // find out about all the windows
-fn get_visible_windows(
-    conn: &xcb::Connection,
-    atoms: &Atoms,
-    w: x::Window,
-) -> xcb::Result<Vec<x::Window>> {
-    let tree = conn.wait_for_reply(conn.send_request(&x::QueryTree { window: w }))?;
-    let mut windows: Vec<x::Window> = tree
-        .children()
-        .iter()
-        .map(|&w| match get_visible_windows(conn, atoms, w) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("QueryTree for window {:?} failed: {}", w, e);
-                vec![]
-            }
-        })
-        .collect::<Vec<Vec<x::Window>>>()
-        .into_iter()
-        .flatten()
-        .collect();
+fn get_window_group(ctx: &Context) -> WindowGroup {
+    let mut wg = WindowGroup::default();
 
-    let stateprop = conn.wait_for_reply(conn.send_request(&x::GetProperty {
-        window: w,
-        delete: false,
-        property: atoms.wm_state,
-        r#type: atoms.wm_state,
-        long_offset: 0,
-        long_length: 512,
-    }))?;
-    if stateprop.r#type() == atoms.wm_state {
-        let state: u32 = stateprop.value()[0];
-        if state == 1 {
-            // NormalState
-            windows.push(w);
+    struct WindowCookies {
+        xw: x::Window,
+        parent_id: u32,
+        geom: x::GetGeometryCookie,
+        state_prop: x::GetPropertyCookie,
+        type_prop: x::GetPropertyCookie,
+    }
+
+    fn get_window_cookies(ctx: &Context, parent_id: u32, xw: x::Window) -> Vec<WindowCookies> {
+        let tree_cookie = ctx.x_query_tree(xw);
+
+        let cookies = WindowCookies {
+            xw,
+            parent_id,
+            geom: ctx.x_get_geometry(xw),
+            state_prop: ctx.x_get_property(xw, ctx.atoms.wm_state, x::ATOM_ANY),
+            type_prop: ctx.x_get_property(xw, ctx.atoms.net_wm_window_type, x::ATOM_ANY),
+        };
+
+        match ctx.conn.wait_for_reply(tree_cookie) {
+            Ok(tree) => {
+                let parent_id = xw.resource_id();
+
+                tree.children()
+                    .iter()
+                    .map(|&cxw| get_window_cookies(ctx, parent_id, cxw))
+                    .into_iter()
+                    .flatten()
+                    .chain(std::iter::once(cookies))
+                    .collect()
+            }
+            Err(e) => {
+                warn!("QueryTree for window {:?} failed: {}", xw, e);
+                vec![cookies]
+            }
         }
     }
 
-    Ok(windows)
-}
+    for wc in get_window_cookies(ctx, ctx.root.resource_id(), ctx.root) {
+        let geom = ctx.conn.wait_for_reply(wc.geom);
+        let state_prop = ctx.conn.wait_for_reply(wc.state_prop);
+        let type_prop = ctx.conn.wait_for_reply(wc.type_prop);
+        match (geom, state_prop, type_prop) {
+            (Err(e), _, _) => warn!("GetGeometry for window {:?} failed: {}", wc.xw, e),
+            (_, Err(e), _) => warn!("GetProperty(WM_STATE) for window {:?} failed: {}", wc.xw, e),
+            (_, _, Err(e)) => warn!(
+                "GetProperty(NET_WM_WINDOW_TYPE) for window {:?} failed: {}",
+                wc.xw, e
+            ),
+            (Ok(geom), Ok(state_prop), Ok(type_prop)) => {
+                let id = wc.xw.resource_id();
 
-fn get_window_geometry(conn: &xcb::Connection, w: &x::Window) -> xcb::Result<x::GetGeometryReply> {
-    conn.wait_for_reply(conn.send_request(&x::GetGeometry {
-        drawable: x::Drawable::Window(*w),
-    }))
-}
+                wg.parents.insert(id, wc.parent_id);
 
-fn get_frame_extents(conn: &xcb::Connection, atoms: &Atoms, w: &x::Window) -> xcb::Result<Extents> {
-    let net_extents = get_frame_extents_prop(conn, atoms.net_frame_extents, w)?;
-    /*
-    let gtk_extents = get_frame_extents_prop(conn, atoms.gtk_frame_extents, w)?;
-    Ok(Extents {
-        left: net_extents.left - gtk_extents.left,
-        right: net_extents.right - gtk_extents.right,
-        top: net_extents.top - gtk_extents.top,
-        bottom: net_extents.bottom - gtk_extents.bottom,
-    })
-    */
-    Ok(net_extents)
-}
+                // only take top-level client windows. ICCCM mandates that they will have a
+                // WM_STATE property, so any that don't are WM frames, housekeeping or other
+                // nonsense and not interesting for layout. WM_STATE==1 is NormalState; its rare to
+                // see anything else but might as well be defensive.
+                //
+                // we also take the root here.  it is doesn't have WM_STATE, but we still want its
+                // need its geometry
 
-fn get_frame_extents_prop(
-    conn: &xcb::Connection,
-    prop: x::Atom,
-    w: &x::Window,
-) -> xcb::Result<Extents> {
-    let extentsprop = conn.wait_for_reply(conn.send_request(&x::GetProperty {
-        window: *w,
-        delete: false,
-        property: prop,
-        r#type: x::ATOM_CARDINAL,
-        long_offset: 0,
-        long_length: 512,
-    }))?;
+                let w = Window {
+                    id: id,
+                    xw: wc.xw,
+                    geom: Rect::new(
+                        (geom.x(), geom.y()).into(),
+                        (geom.width() as i16, geom.height() as i16).into(),
+                    ),
+                    typ: match wc.xw == ctx.root {
+                        true => WindowType::Root,
+                        false => match type_prop.length() {
+                            // some clients (Spotify) do not set a _NET_WM_WINDOW_TYPE at all.
+                            // we already. we just treat them as TYPE_NORMAL here, because
+                            // unless they've been selected somehow it won't even matter.
+                            0 => WindowType::Normal,
+                            _ => match type_prop.value::<x::Atom>()[0] {
+                                v if v == ctx.atoms.net_wm_window_type_dock => WindowType::Dock,
+                                v if v == ctx.atoms.net_wm_window_type_desktop => {
+                                    WindowType::Desktop
+                                }
+                                _ => WindowType::Normal,
+                            },
+                        },
+                    },
+                };
 
-    let extents = match extentsprop.r#type() {
-        x::ATOM_CARDINAL => {
-            let v: &[u32] = extentsprop.value();
-            Extents {
-                left: v[0] as i16,
-                right: v[1] as i16,
-                top: v[2] as i16,
-                bottom: v[3] as i16,
+                if wc.xw == ctx.root
+                    || state_prop.r#type() == ctx.atoms.wm_state
+                        && state_prop.value::<u32>()[0] == 1
+                {
+                    match w.typ {
+                        WindowType::Normal => {
+                            // XXX actually drill down to child like the select thing does
+                            wg.selectable.insert(id);
+                            ()
+                        }
+                        WindowType::Dock => {
+                            wg.dock.insert(id);
+                            ()
+                        }
+                        WindowType::Desktop => {
+                            wg.desktop.insert(id);
+                            ()
+                        }
+                        WindowType::Root => wg.root = Some(id),
+                    }
+                }
+
+                wg.windows.insert(id, w);
             }
         }
-        _ => {
-            debug!("{:?} has no extents {:?}, assuming zero", w, prop);
-            Extents {
-                left: 0,
-                right: 0,
-                top: 0,
-                bottom: 0,
-            }
-        }
-    };
+    }
 
-    debug!("{:?} extents {:?}: {:?}", w, prop, extents);
-
-    Ok(extents)
+    wg
 }
 
-fn select_window(conn: &xcb::Connection, atoms: &Atoms, root: x::Window) -> xcb::Result<u32> {
-    let font = conn.generate_id();
-    conn.send_request(&x::OpenFont {
+fn select_window(ctx: &Context) -> xcb::Result<u32> {
+    let font = ctx.conn.generate_id();
+    ctx.conn.send_request(&x::OpenFont {
         fid: font,
         name: b"cursor",
     });
 
-    let cursor = conn.generate_id();
-    conn.send_request(&x::CreateGlyphCursor {
+    let cursor = ctx.conn.generate_id();
+    ctx.conn.send_request(&x::CreateGlyphCursor {
         cid: cursor,
         source_font: font,
         mask_font: font,
@@ -528,25 +621,26 @@ fn select_window(conn: &xcb::Connection, atoms: &Atoms, root: x::Window) -> xcb:
         back_blue: 0xffff,
     });
 
-    conn.wait_for_reply(conn.send_request(&x::GrabPointer {
-        owner_events: false,
-        grab_window: root,
-        event_mask: x::EventMask::BUTTON_PRESS | x::EventMask::BUTTON_RELEASE,
-        pointer_mode: x::GrabMode::Sync,
-        keyboard_mode: x::GrabMode::Async,
-        confine_to: root,
-        cursor: cursor,
-        time: x::CURRENT_TIME,
-    }))?;
+    ctx.conn
+        .wait_for_reply(ctx.conn.send_request(&x::GrabPointer {
+            owner_events: false,
+            grab_window: ctx.root,
+            event_mask: x::EventMask::BUTTON_PRESS | x::EventMask::BUTTON_RELEASE,
+            pointer_mode: x::GrabMode::Sync,
+            keyboard_mode: x::GrabMode::Async,
+            confine_to: ctx.root,
+            cursor: cursor,
+            time: x::CURRENT_TIME,
+        }))?;
 
     let selected = loop {
-        conn.send_request(&x::AllowEvents {
+        ctx.conn.send_request(&x::AllowEvents {
             mode: x::Allow::SyncPointer,
             time: x::CURRENT_TIME,
         });
-        conn.flush()?;
+        ctx.conn.flush()?;
 
-        if let xcb::Event::X(x::Event::ButtonPress(ev)) = conn.wait_for_event()? {
+        if let xcb::Event::X(x::Event::ButtonPress(ev)) = ctx.conn.wait_for_event()? {
             let w = ev.child();
             if !w.is_none() {
                 break w;
@@ -554,93 +648,71 @@ fn select_window(conn: &xcb::Connection, atoms: &Atoms, root: x::Window) -> xcb:
         }
     };
 
-    conn.send_request(&x::UngrabPointer {
+    ctx.conn.send_request(&x::UngrabPointer {
         time: x::CURRENT_TIME,
     });
-    conn.flush()?;
+    ctx.conn.flush()?;
 
-    let subwindows = get_visible_windows(conn, atoms, selected)?;
-
-    let window = match subwindows.is_empty() {
-        true => selected,
-        false => subwindows[0],
-    };
-
-    Ok(window.resource_id())
+    Ok(selected.resource_id())
 }
 
-fn compute_target_bounds(
-    current: &Bounds,
-    usable: &Bounds,
-    horiz: HorizSpec,
-    vert: VertSpec,
-) -> Bounds {
-    let (x, w) = compute_target_horiz_bounds(current, usable, horiz);
-    let (y, h) = compute_target_vert_bounds(current, usable, vert);
-    Bounds { x, y, w, h }
+fn compute_new_box(current: &Box2D, avail: &Box2D, hspec: HorizSpec, vspec: VertSpec) -> Box2D {
+    let (x1, x2) = compute_new_horiz(current, avail, hspec);
+    let (y1, y2) = compute_new_vert(current, avail, vspec);
+    Box2D::new((x1, y1).into(), (x2, y2).into())
 }
 
-fn compute_target_horiz_bounds(current: &Bounds, usable: &Bounds, horiz: HorizSpec) -> (i16, i16) {
-    match horiz {
-        HorizSpec::Current => (current.x, current.w),
+fn compute_new_horiz(current: &Box2D, avail: &Box2D, hspec: HorizSpec) -> (i16, i16) {
+    match hspec {
+        HorizSpec::Current => (current.min.x, current.max.x),
 
-        HorizSpec::Left25 => (usable.x, usable.w.div_euclid(4)),
-        HorizSpec::Left50 => (usable.x, usable.w.div_euclid(2)),
-        HorizSpec::Left75 => (usable.x, (usable.w * 3).div_euclid(4)),
+        HorizSpec::Left25 => (avail.min.x, avail.min.x + avail.width().div_euclid(4)),
+        HorizSpec::Left50 => (avail.min.x, avail.min.x + avail.width().div_euclid(2)),
+        HorizSpec::Left75 => (avail.min.x, avail.min.x + (avail.width() * 3).div_euclid(4)),
 
-        HorizSpec::Right25 => (
-            usable.x + ((usable.w as i16) * 3).div_euclid(4),
-            usable.w.div_euclid(4),
-        ),
-        HorizSpec::Right50 => (
-            usable.x + (usable.w as i16).div_euclid(2),
-            usable.w.div_euclid(2),
-        ),
-        HorizSpec::Right75 => (
-            usable.x + (usable.w as i16).div_euclid(4),
-            (usable.w * 3).div_euclid(4),
-        ),
+        HorizSpec::Right25 => (avail.max.x - avail.width().div_euclid(4), avail.max.x),
+        HorizSpec::Right50 => (avail.max.x - avail.width().div_euclid(2), avail.max.x),
+        HorizSpec::Right75 => (avail.max.x - (avail.width() * 3).div_euclid(4), avail.max.x),
 
-        HorizSpec::Full => (usable.x, usable.w),
+        HorizSpec::Full => (avail.min.x, avail.max.x),
 
         HorizSpec::Left => {
-            let (x25, w25) = compute_target_horiz_bounds(current, usable, HorizSpec::Left25);
-            let (x50, w50) = compute_target_horiz_bounds(current, usable, HorizSpec::Left50);
-            let (x75, w75) = compute_target_horiz_bounds(current, usable, HorizSpec::Left75);
+            let (x1_25, x2_25) = compute_new_horiz(current, avail, HorizSpec::Left25);
+            let (x1_50, x2_50) = compute_new_horiz(current, avail, HorizSpec::Left50);
+            let (x1_75, x2_75) = compute_new_horiz(current, avail, HorizSpec::Left75);
 
-            if (current.x, current.w) == (x50, w50) {
-                (x25, w25)
-            } else if (current.x, current.w) == (x25, w25) {
-                (x75, w75)
+            if (current.min.x, current.max.x) == (x1_50, x2_50) {
+                (x1_25, x2_25)
+            } else if (current.min.x, current.max.x) == (x1_25, x2_25) {
+                (x1_75, x2_75)
             } else {
-                (x50, w50)
+                (x1_50, x2_50)
             }
         }
 
         HorizSpec::Right => {
-            let (x25, w25) = compute_target_horiz_bounds(current, usable, HorizSpec::Right25);
-            let (x50, w50) = compute_target_horiz_bounds(current, usable, HorizSpec::Right50);
-            let (x75, w75) = compute_target_horiz_bounds(current, usable, HorizSpec::Right75);
+            let (x1_25, x2_25) = compute_new_horiz(current, avail, HorizSpec::Right25);
+            let (x1_50, x2_50) = compute_new_horiz(current, avail, HorizSpec::Right50);
+            let (x1_75, x2_75) = compute_new_horiz(current, avail, HorizSpec::Right75);
 
-            if (current.x, current.w) == (x50, w50) {
-                (x25, w25)
-            } else if (current.x, current.w) == (x25, w25) {
-                (x75, w75)
+            if (current.min.x, current.max.x) == (x1_50, x2_50) {
+                (x1_25, x2_25)
+            } else if (current.min.x, current.max.x) == (x1_25, x2_25) {
+                (x1_75, x2_75)
             } else {
-                (x50, w50)
+                (x1_50, x2_50)
             }
         }
     }
 }
 
-fn compute_target_vert_bounds(current: &Bounds, usable: &Bounds, vert: VertSpec) -> (i16, i16) {
-    match vert {
-        VertSpec::Current => (current.y, current.h),
-        VertSpec::Top => (usable.y, usable.h.div_euclid(2)),
-        VertSpec::Bottom => (
-            usable.y + (usable.h as i16).div_euclid(2),
-            usable.h.div_euclid(2),
-        ),
-        VertSpec::Full => (usable.y, usable.h),
+fn compute_new_vert(current: &Box2D, avail: &Box2D, vspec: VertSpec) -> (i16, i16) {
+    match vspec {
+        VertSpec::Current => (current.min.y, current.max.y),
+
+        VertSpec::Top => (avail.min.y, avail.min.y + avail.height().div_euclid(2)),
+        VertSpec::Bottom => (avail.max.y - avail.height().div_euclid(2), avail.max.y),
+
+        VertSpec::Full => (avail.min.y, avail.max.y),
     }
 }

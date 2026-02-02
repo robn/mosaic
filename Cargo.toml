@@ -14,5 +14,6 @@ bitflags = "2.10"
 clap = { version = "4.5", features = ["derive"] }
 clap-num = "1.2"
 env_logger = "0.11"
+euclid = "0.22"
 log = "0.4"
 xcb = { version = "1.7", features = [ "debug_atom_names" ] }
