@@ -25,7 +25,7 @@ xcb::atoms_struct! {
 #[derive(Parser, Debug)]
 #[clap(group(ArgGroup::new("target").required(true)))]
 struct RootArgs {
-    #[clap(long, group = "target", parse(try_from_str=clap_num::maybe_hex))]
+    #[clap(long, group = "target", value_parser=clap_num::maybe_hex::<u32>)]
     id: Option<u32>,
 
     #[clap(long, group = "target")]
