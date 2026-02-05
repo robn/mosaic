@@ -151,6 +151,22 @@ struct WindowGroup {
 }
 
 impl Context {
+    fn new() -> xcb::Result<Context> {
+        let (conn, scr_num) = xcb::Connection::connect(None)?;
+
+        let atoms = Atoms::intern_all(&conn)?;
+
+        let root = conn
+            .get_setup()
+            .roots()
+            .nth(scr_num as usize)
+            .unwrap()
+            .to_owned()
+            .root();
+
+        Ok(Context { conn, atoms, root })
+    }
+
     fn x_query_tree(&self, xw: x::Window) -> x::QueryTreeCookie {
         self.conn.send_request(&x::QueryTree { window: xw })
     }
@@ -232,21 +248,7 @@ fn main() -> xcb::Result<()> {
 
     env_logger::Builder::new().parse_default_env().init();
 
-    let ctx = {
-        let (conn, scr_num) = xcb::Connection::connect(None)?;
-
-        let atoms = Atoms::intern_all(&conn)?;
-
-        let root = conn
-            .get_setup()
-            .roots()
-            .nth(scr_num as usize)
-            .unwrap()
-            .to_owned()
-            .root();
-
-        Context { conn, atoms, root }
-    };
+    let ctx = Context::new()?;
 
     let wg = get_window_group(&ctx);
     //debug!("{:#?}", wg);
