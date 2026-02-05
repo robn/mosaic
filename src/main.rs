@@ -1,5 +1,6 @@
 use clap::{ArgGroup, Parser, ValueEnum};
 use log::{debug, warn};
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use xcb::{x, Xid};
 
@@ -138,6 +139,7 @@ struct Context {
     conn: xcb::Connection,
     atoms: Atoms,
     root: x::Window,
+    wg: OnceCell<WindowGroup>,
 }
 
 #[derive(Debug, Default)]
@@ -164,7 +166,146 @@ impl Context {
             .to_owned()
             .root();
 
-        Ok(Context { conn, atoms, root })
+        Ok(Context {
+            conn,
+            atoms,
+            root,
+            wg: OnceCell::new(),
+        })
+    }
+
+    fn window(&self, id: u32) -> &Window {
+        &self.window_group().windows[&id]
+    }
+
+    fn window_group(&self) -> &WindowGroup {
+        self.wg.get_or_init(|| {
+            let mut wg = WindowGroup::default();
+
+            struct WindowCookies {
+                xw: x::Window,
+                parent_id: u32,
+                geom: x::GetGeometryCookie,
+                state_prop: x::GetPropertyCookie,
+                type_prop: x::GetPropertyCookie,
+            }
+
+            fn get_window_cookies(
+                ctx: &Context,
+                parent_id: u32,
+                xw: x::Window,
+            ) -> Vec<WindowCookies> {
+                let tree_cookie = ctx.x_query_tree(xw);
+
+                let cookies = WindowCookies {
+                    xw,
+                    parent_id,
+                    geom: ctx.x_get_geometry(xw),
+                    state_prop: ctx.x_get_property(xw, ctx.atoms.wm_state, x::ATOM_ANY),
+                    type_prop: ctx.x_get_property(xw, ctx.atoms.net_wm_window_type, x::ATOM_ANY),
+                };
+
+                match ctx.conn.wait_for_reply(tree_cookie) {
+                    Ok(tree) => {
+                        let parent_id = xw.resource_id();
+
+                        tree.children()
+                            .iter()
+                            .map(|&cxw| get_window_cookies(ctx, parent_id, cxw))
+                            .into_iter()
+                            .flatten()
+                            .chain(std::iter::once(cookies))
+                            .collect()
+                    }
+                    Err(e) => {
+                        warn!("QueryTree for window {:?} failed: {}", xw, e);
+                        vec![cookies]
+                    }
+                }
+            }
+
+            for wc in get_window_cookies(self, self.root.resource_id(), self.root) {
+                let geom = self.conn.wait_for_reply(wc.geom);
+                let state_prop = self.conn.wait_for_reply(wc.state_prop);
+                let type_prop = self.conn.wait_for_reply(wc.type_prop);
+                match (geom, state_prop, type_prop) {
+                    (Err(e), _, _) => warn!("GetGeometry for window {:?} failed: {}", wc.xw, e),
+                    (_, Err(e), _) => {
+                        warn!("GetProperty(WM_STATE) for window {:?} failed: {}", wc.xw, e)
+                    }
+                    (_, _, Err(e)) => warn!(
+                        "GetProperty(NET_WM_WINDOW_TYPE) for window {:?} failed: {}",
+                        wc.xw, e
+                    ),
+                    (Ok(geom), Ok(state_prop), Ok(type_prop)) => {
+                        let id = wc.xw.resource_id();
+
+                        wg.parents.insert(id, wc.parent_id);
+
+                        // only take top-level client windows. ICCCM mandates that they will have a
+                        // WM_STATE property, so any that don't are WM frames, housekeeping or other
+                        // nonsense and not interesting for layout. WM_STATE==1 is NormalState; its rare to
+                        // see anything else but might as well be defensive.
+                        //
+                        // we also take the root here.  it is doesn't have WM_STATE, but we still want its
+                        // need its geometry
+
+                        let w = Window {
+                            id: id,
+                            xw: wc.xw,
+                            geom: Rect::new(
+                                (geom.x(), geom.y()).into(),
+                                (geom.width() as i16, geom.height() as i16).into(),
+                            ),
+                            typ: match wc.xw == self.root {
+                                true => WindowType::Root,
+                                false => match type_prop.length() {
+                                    // some clients (Spotify) do not set a _NET_WM_WINDOW_TYPE at all.
+                                    // we already. we just treat them as TYPE_NORMAL here, because
+                                    // unless they've been selected somehow it won't even matter.
+                                    0 => WindowType::Normal,
+                                    _ => match type_prop.value::<x::Atom>()[0] {
+                                        v if v == self.atoms.net_wm_window_type_dock => {
+                                            WindowType::Dock
+                                        }
+                                        v if v == self.atoms.net_wm_window_type_desktop => {
+                                            WindowType::Desktop
+                                        }
+                                        _ => WindowType::Normal,
+                                    },
+                                },
+                            },
+                        };
+
+                        if wc.xw == self.root
+                            || state_prop.r#type() == self.atoms.wm_state
+                                && state_prop.value::<u32>()[0] == 1
+                        {
+                            match w.typ {
+                                WindowType::Normal => {
+                                    // XXX actually drill down to child like the select thing does
+                                    wg.selectable.insert(id);
+                                    ()
+                                }
+                                WindowType::Dock => {
+                                    wg.dock.insert(id);
+                                    ()
+                                }
+                                WindowType::Desktop => {
+                                    wg.desktop.insert(id);
+                                    ()
+                                }
+                                WindowType::Root => wg.root = Some(id),
+                            }
+                        }
+
+                        wg.windows.insert(id, w);
+                    }
+                }
+            }
+
+            wg
+        })
     }
 
     fn x_query_tree(&self, xw: x::Window) -> x::QueryTreeCookie {
@@ -202,8 +343,7 @@ impl Context {
         let mut geom = w.geom;
         while id != self.root.resource_id() {
             id = wg.parents[&id];
-            let w = &wg.windows[&id];
-            geom = geom.translate(w.geom.origin.to_vector());
+            geom = geom.translate(self.window(id).geom.origin.to_vector());
         }
         geom.min() - w.geom.min()
     }
@@ -250,11 +390,11 @@ fn main() -> xcb::Result<()> {
 
     let ctx = Context::new()?;
 
-    let wg = get_window_group(&ctx);
+    let wg = ctx.window_group();
     //debug!("{:#?}", wg);
 
-    for desktop_id in wg.desktop.iter() {
-        let desktop = &wg.windows[&desktop_id];
+    for &desktop_id in wg.desktop.iter() {
+        let desktop = ctx.window(desktop_id);
         debug!("desktop geom: {:?}", desktop.geom);
     }
 
@@ -342,14 +482,14 @@ fn main() -> xcb::Result<()> {
 
     debug!("target window id: {}", target_id);
 
-    let current_geom = wg.windows[&target_id].geom;
+    let current_geom = ctx.window(target_id).geom;
     debug!("target geom: {:?}", current_geom);
 
     let current_box = current_geom.to_box2d();
     debug!("target current box: {:?}", current_box);
 
     let frame_extents =
-        ctx.window_frame_extents(&wg.windows[&target_id], ctx.atoms.net_frame_extents)?;
+        ctx.window_frame_extents(ctx.window(target_id), ctx.atoms.net_frame_extents)?;
     debug!("target frame extents: {:?}", frame_extents);
 
     let unframed_box = current_box.outer_box(frame_extents);
@@ -361,9 +501,10 @@ fn main() -> xcb::Result<()> {
         .desktop
         .iter()
         .filter_map(|&id| {
-            let desktop = wg.windows[&id]
+            let desktop = ctx
+                .window(id)
                 .geom
-                .translate(ctx.window_abs_xlate(&wg.windows[&id], &wg))
+                .translate(ctx.window_abs_xlate(ctx.window(id), &wg))
                 .to_box2d();
             debug!("desktop {} box: {:?}", id, desktop);
             desktop.contains(current_box.min).then(|| {
@@ -383,10 +524,11 @@ fn main() -> xcb::Result<()> {
     debug!("initial avail box: {:?}", avail_box);
 
     let avail_box = wg.dock.iter().fold(avail_box, |avail, &id| {
-        debug!("dock {} geom: {:?}", id, wg.windows[&id].geom);
-        let dock = wg.windows[&id]
+        debug!("dock {} geom: {:?}", id, ctx.window(id).geom);
+        let dock = ctx
+            .window(id)
             .geom
-            .translate(ctx.window_abs_xlate(&wg.windows[&id], &wg))
+            .translate(ctx.window_abs_xlate(ctx.window(id), &wg))
             .to_box2d();
         debug!("dock {} box: {:?}", id, dock);
         match avail.intersection(&dock) {
@@ -448,7 +590,7 @@ fn main() -> xcb::Result<()> {
     debug!("target new geom: {:?}", new_geom);
 
     let ev = {
-        let target = &wg.windows[&target_id];
+        let target = ctx.window(target_id);
 
         x::ClientMessageEvent::new(
             target.xw,
@@ -478,127 +620,6 @@ fn main() -> xcb::Result<()> {
     ctx.conn.flush()?;
 
     Ok(())
-}
-
-// find out about all the windows
-fn get_window_group(ctx: &Context) -> WindowGroup {
-    let mut wg = WindowGroup::default();
-
-    struct WindowCookies {
-        xw: x::Window,
-        parent_id: u32,
-        geom: x::GetGeometryCookie,
-        state_prop: x::GetPropertyCookie,
-        type_prop: x::GetPropertyCookie,
-    }
-
-    fn get_window_cookies(ctx: &Context, parent_id: u32, xw: x::Window) -> Vec<WindowCookies> {
-        let tree_cookie = ctx.x_query_tree(xw);
-
-        let cookies = WindowCookies {
-            xw,
-            parent_id,
-            geom: ctx.x_get_geometry(xw),
-            state_prop: ctx.x_get_property(xw, ctx.atoms.wm_state, x::ATOM_ANY),
-            type_prop: ctx.x_get_property(xw, ctx.atoms.net_wm_window_type, x::ATOM_ANY),
-        };
-
-        match ctx.conn.wait_for_reply(tree_cookie) {
-            Ok(tree) => {
-                let parent_id = xw.resource_id();
-
-                tree.children()
-                    .iter()
-                    .map(|&cxw| get_window_cookies(ctx, parent_id, cxw))
-                    .into_iter()
-                    .flatten()
-                    .chain(std::iter::once(cookies))
-                    .collect()
-            }
-            Err(e) => {
-                warn!("QueryTree for window {:?} failed: {}", xw, e);
-                vec![cookies]
-            }
-        }
-    }
-
-    for wc in get_window_cookies(ctx, ctx.root.resource_id(), ctx.root) {
-        let geom = ctx.conn.wait_for_reply(wc.geom);
-        let state_prop = ctx.conn.wait_for_reply(wc.state_prop);
-        let type_prop = ctx.conn.wait_for_reply(wc.type_prop);
-        match (geom, state_prop, type_prop) {
-            (Err(e), _, _) => warn!("GetGeometry for window {:?} failed: {}", wc.xw, e),
-            (_, Err(e), _) => warn!("GetProperty(WM_STATE) for window {:?} failed: {}", wc.xw, e),
-            (_, _, Err(e)) => warn!(
-                "GetProperty(NET_WM_WINDOW_TYPE) for window {:?} failed: {}",
-                wc.xw, e
-            ),
-            (Ok(geom), Ok(state_prop), Ok(type_prop)) => {
-                let id = wc.xw.resource_id();
-
-                wg.parents.insert(id, wc.parent_id);
-
-                // only take top-level client windows. ICCCM mandates that they will have a
-                // WM_STATE property, so any that don't are WM frames, housekeeping or other
-                // nonsense and not interesting for layout. WM_STATE==1 is NormalState; its rare to
-                // see anything else but might as well be defensive.
-                //
-                // we also take the root here.  it is doesn't have WM_STATE, but we still want its
-                // need its geometry
-
-                let w = Window {
-                    id: id,
-                    xw: wc.xw,
-                    geom: Rect::new(
-                        (geom.x(), geom.y()).into(),
-                        (geom.width() as i16, geom.height() as i16).into(),
-                    ),
-                    typ: match wc.xw == ctx.root {
-                        true => WindowType::Root,
-                        false => match type_prop.length() {
-                            // some clients (Spotify) do not set a _NET_WM_WINDOW_TYPE at all.
-                            // we already. we just treat them as TYPE_NORMAL here, because
-                            // unless they've been selected somehow it won't even matter.
-                            0 => WindowType::Normal,
-                            _ => match type_prop.value::<x::Atom>()[0] {
-                                v if v == ctx.atoms.net_wm_window_type_dock => WindowType::Dock,
-                                v if v == ctx.atoms.net_wm_window_type_desktop => {
-                                    WindowType::Desktop
-                                }
-                                _ => WindowType::Normal,
-                            },
-                        },
-                    },
-                };
-
-                if wc.xw == ctx.root
-                    || state_prop.r#type() == ctx.atoms.wm_state
-                        && state_prop.value::<u32>()[0] == 1
-                {
-                    match w.typ {
-                        WindowType::Normal => {
-                            // XXX actually drill down to child like the select thing does
-                            wg.selectable.insert(id);
-                            ()
-                        }
-                        WindowType::Dock => {
-                            wg.dock.insert(id);
-                            ()
-                        }
-                        WindowType::Desktop => {
-                            wg.desktop.insert(id);
-                            ()
-                        }
-                        WindowType::Root => wg.root = Some(id),
-                    }
-                }
-
-                wg.windows.insert(id, w);
-            }
-        }
-    }
-
-    wg
 }
 
 fn select_window(ctx: &Context) -> xcb::Result<u32> {
