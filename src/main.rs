@@ -95,41 +95,6 @@ fn main() -> xcb::Result<()> {
 
     let sess = Session::init()?;
 
-    for &desktop_id in sess.desktops() {
-        let desktop = sess.window(desktop_id);
-        debug!("desktop geom: {:?}", desktop.geom);
-    }
-
-    /*
-    // stage 1: discover all visible windows
-
-    // all the on-screen windows
-    // XXX same workspace: _NET_WM_DESKTOP(CARDINAL)
-    let all_windows = get_visible_windows(&sess);
-
-    //println!("{:#?}", all_windows);
-
-    // split into regular windows that we can operate on, and special windows that we should try
-    // not to cover
-    let (normal_windows, dock_windows, desktop_windows, root_window) = all_windows.iter().fold(
-        (vec![], vec![], vec![], None),
-        |(mut normal, mut dock, mut desktop, mut root), w| {
-            match w.typ {
-                WindowType::Normal => normal.push(w),
-                WindowType::Dock => dock.push(w),
-                WindowType::Desktop => desktop.push(w),
-                WindowType::Root => root = Some(w),
-            }
-            (normal, dock, desktop, root)
-        },
-    );
-    */
-
-    // stage 2: figure out the window they asked for, and fetch/compute its
-    // size, frame extents, etc - everything we need to figure out how to place it
-    //
-    // we have to do this first, because we need its position so we can decide which desktop to use
-    // as a reference
     let target_id = 'target: {
         let id = match target_arg {
             TargetArgs::Id(id) => id,
