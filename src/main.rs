@@ -237,18 +237,24 @@ fn compute_new_geom(current: &Box2D, avail: &Box2D, hspec: HorizSpec, vspec: Ver
 
 fn compute_new_horiz(current: &Box2D, avail: &Box2D, hspec: HorizSpec) -> (i16, i16) {
     match hspec {
+        // Don't modify horizontal
         HorizSpec::Current => (current.min.x, current.max.x),
 
+        // Leftmost 25/50/75%
         HorizSpec::Left25 => (avail.min.x, avail.min.x + avail.width().div_euclid(4)),
         HorizSpec::Left50 => (avail.min.x, avail.min.x + avail.width().div_euclid(2)),
         HorizSpec::Left75 => (avail.min.x, avail.min.x + (avail.width() * 3).div_euclid(4)),
 
+        // Rightmost 25/50/75%
         HorizSpec::Right25 => (avail.max.x - avail.width().div_euclid(4), avail.max.x),
         HorizSpec::Right50 => (avail.max.x - avail.width().div_euclid(2), avail.max.x),
         HorizSpec::Right75 => (avail.max.x - (avail.width() * 3).div_euclid(4), avail.max.x),
 
+        // Full width
         HorizSpec::Full => (avail.min.x, avail.max.x),
 
+        // Cycle through left 25/50/75
+        // XXX never used these really and still not convinced
         HorizSpec::Left => {
             let (x1_25, x2_25) = compute_new_horiz(current, avail, HorizSpec::Left25);
             let (x1_50, x2_50) = compute_new_horiz(current, avail, HorizSpec::Left50);
@@ -263,6 +269,8 @@ fn compute_new_horiz(current: &Box2D, avail: &Box2D, hspec: HorizSpec) -> (i16, 
             }
         }
 
+        // Cycle through right 25/50/75
+        // XXX ditto
         HorizSpec::Right => {
             let (x1_25, x2_25) = compute_new_horiz(current, avail, HorizSpec::Right25);
             let (x1_50, x2_50) = compute_new_horiz(current, avail, HorizSpec::Right50);
@@ -281,11 +289,14 @@ fn compute_new_horiz(current: &Box2D, avail: &Box2D, hspec: HorizSpec) -> (i16, 
 
 fn compute_new_vert(current: &Box2D, avail: &Box2D, vspec: VertSpec) -> (i16, i16) {
     match vspec {
+        // Don't modify vertical
         VertSpec::Current => (current.min.y, current.max.y),
 
+        // Top & bottom half
         VertSpec::Top => (avail.min.y, avail.min.y + avail.height().div_euclid(2)),
         VertSpec::Bottom => (avail.max.y - avail.height().div_euclid(2), avail.max.y),
 
+        // Full height
         VertSpec::Full => (avail.min.y, avail.max.y),
     }
 }
