@@ -189,8 +189,7 @@ fn main() -> xcb::Result<()> {
     let current_box = current_geom.to_box2d();
     debug!("target current box: {:?}", current_box);
 
-    let frame_extents =
-        sess.window_frame_extents(sess.window(target_id), sess.atoms().net_frame_extents)?;
+    let frame_extents = sess.window(target_id).frame_extents()?;
     debug!("target frame extents: {:?}", frame_extents);
 
     let unframed_box = current_box.outer_box(frame_extents);

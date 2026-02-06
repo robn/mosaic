@@ -18,7 +18,7 @@ xcb::atoms_struct! {
 
         pub net_active_window => b"_NET_ACTIVE_WINDOW",
 
-        pub net_frame_extents => b"_NET_FRAME_EXTENTS",
+        net_frame_extents => b"_NET_FRAME_EXTENTS",
         gtk_frame_extents => b"_GTK_FRAME_EXTENTS",
 
         pub net_moveresize_window => b"_NET_MOVERESIZE_WINDOW",
@@ -288,35 +288,6 @@ impl Session {
         ))?;
         Ok(String::from_utf8_lossy(name_prop.value()).to_string())
     }
-
-    pub(crate) fn window_frame_extents(
-        &self,
-        w: &Window,
-        prop: x::Atom,
-    ) -> xcb::Result<SideOffsets2D> {
-        let extents_prop =
-            self.0
-                .conn
-                .wait_for_reply(self.x_get_property(w.xw, prop, x::ATOM_CARDINAL))?;
-
-        match extents_prop.r#type() {
-            x::ATOM_CARDINAL => {
-                let v: &[u32] = extents_prop.value();
-                // CSS order: top, right, bottom, left
-                // Cardinal order: left, right, bottom, top
-                Ok(SideOffsets2D::new(
-                    v[2] as i16,
-                    v[1] as i16,
-                    v[3] as i16,
-                    v[0] as i16,
-                ))
-            }
-            _ => {
-                debug!("window {} has no extents {:?}, assuming zero", w.id, prop);
-                Ok(SideOffsets2D::zero())
-            }
-        }
-    }
 }
 
 impl std::fmt::Debug for Session {
@@ -334,5 +305,38 @@ impl Window {
             geom = geom.translate(self.sess.window(id).geom.origin.to_vector());
         }
         geom.min() - self.geom.min()
+    }
+
+    pub(crate) fn frame_extents(&self) -> xcb::Result<SideOffsets2D> {
+        // XXX include gtk_frame_extents?
+
+        let prop = self.sess.0.atoms.net_frame_extents;
+
+        let extents_prop = self.sess.0.conn.wait_for_reply(self.sess.x_get_property(
+            self.xw,
+            prop,
+            x::ATOM_CARDINAL,
+        ))?;
+
+        match extents_prop.r#type() {
+            x::ATOM_CARDINAL => {
+                let v: &[u32] = extents_prop.value();
+                // CSS order: top, right, bottom, left
+                // Cardinal order: left, right, bottom, top
+                Ok(SideOffsets2D::new(
+                    v[2] as i16,
+                    v[1] as i16,
+                    v[3] as i16,
+                    v[0] as i16,
+                ))
+            }
+            _ => {
+                debug!(
+                    "window {} has no extents {:?}, assuming zero",
+                    self.id, prop
+                );
+                Ok(SideOffsets2D::zero())
+            }
+        }
     }
 }
