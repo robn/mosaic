@@ -1,5 +1,3 @@
-- fix GTK extent handling
-- understand why current width calc is off for Discord
-- cleanup left/right cycling
-- dock window intersection
-- only consider windows on this workspace
+- fix GTK extent handling?
+- understand why current width calc is off for Discord?
+- only consider windows on this workspace?
