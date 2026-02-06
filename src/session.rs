@@ -47,7 +47,6 @@ struct SessionImpl {
 #[derive(Debug, Default)]
 pub struct WindowGroup {
     windows: BTreeMap<u32, Window>,
-    pub root: Option<u32>,
     desktop: BTreeSet<u32>,
     dock: BTreeSet<u32>,
 }
@@ -98,6 +97,9 @@ impl Session {
 
     pub(crate) fn window(&self, id: u32) -> &Window {
         &self.window_group().windows[&id]
+    }
+    pub(crate) fn root(&self) -> &Window {
+        self.window(self.0.root.resource_id())
     }
 
     pub(crate) fn desktops(&self) -> impl Iterator<Item = &u32> {
@@ -224,7 +226,6 @@ impl Session {
                                 wg.desktop.insert(id);
                                 ()
                             }
-                            WindowType::Root => wg.root = Some(id),
                             _ => {}
                         };
 
@@ -311,9 +312,6 @@ impl Session {
     }
     pub(crate) fn atoms(&self) -> &Atoms {
         &self.0.atoms
-    }
-    pub(crate) fn root(&self) -> x::Window {
-        self.0.root
     }
 
     fn x_query_tree(&self, xw: x::Window) -> x::QueryTreeCookie {

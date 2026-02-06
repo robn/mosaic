@@ -6,7 +6,7 @@ use crate::session::Session;
 
 use clap::{ArgGroup, Parser, ValueEnum};
 use log::{debug, warn};
-use xcb::{x, Xid};
+use xcb::x;
 
 // XXX use ArgGroup enums for target: https://github.com/clap-rs/clap/issues/2621
 #[derive(Parser, Debug)]
@@ -108,7 +108,7 @@ fn main() -> xcb::Result<()> {
         }
 
         let mut parent = w.parent;
-        while parent > 0 && parent != sess.root().resource_id() {
+        while parent > 0 && parent != sess.root().id {
             debug!(
                 "requested window {} not selectable, checking parent",
                 parent
@@ -261,7 +261,7 @@ fn main() -> xcb::Result<()> {
 
     sess.conn().send_request(&x::SendEvent {
         propagate: false,
-        destination: x::SendEventDest::Window(sess.root()),
+        destination: x::SendEventDest::Window(sess.root().xw),
         event_mask: x::EventMask::SUBSTRUCTURE_REDIRECT | x::EventMask::SUBSTRUCTURE_NOTIFY,
         event: &ev,
     });
