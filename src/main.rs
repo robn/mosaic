@@ -156,22 +156,18 @@ fn main() -> xcb::Result<()> {
 
         while id > 0 && id != sess.root().resource_id() {
             debug!("requested window {} not selectable, checking parent", id);
-            id = sess.window(id).parent_id;
+            id = sess.window(id).parent;
             if wg.selectable.contains(&id) {
                 debug!("parent window {} selectable, using it", id);
                 break 'target id;
             }
         }
 
-        if let Some(id) = wg
-            .parents
+        if let Some(id) = sess
+            .window(orig_id)
+            .children
             .iter()
-            .filter_map(
-                |(&cid, &pid)| match pid == orig_id && wg.selectable.contains(&cid) {
-                    true => Some(cid),
-                    false => None,
-                },
-            )
+            .filter_map(|&cid| wg.selectable.contains(&cid).then_some(cid))
             .next()
         {
             debug!("child window {} selectable, using it", id);

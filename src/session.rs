@@ -51,7 +51,6 @@ pub struct WindowGroup {
     pub desktop: BTreeSet<u32>,
     pub dock: BTreeSet<u32>,
     pub selectable: BTreeSet<u32>,
-    pub parents: BTreeMap<u32, u32>,
 }
 
 // Window represents a wraps a single X11 window. It has a reference to the session it came from so
@@ -61,7 +60,8 @@ pub struct WindowGroup {
 pub struct Window {
     sess: Session,
     pub id: u32,
-    pub parent_id: u32,
+    pub parent: u32,
+    pub children: Vec<u32>,
     pub xw: x::Window,
     pub geom: Rect,
     typ: WindowType,
@@ -106,22 +106,22 @@ impl Session {
 
             struct WindowCookies {
                 xw: x::Window,
-                parent_id: u32,
+                parent: u32,
                 geom: x::GetGeometryCookie,
                 state_prop: x::GetPropertyCookie,
                 type_prop: x::GetPropertyCookie,
             }
 
-            fn get_window_cookies(
+            fn get_window_state(
                 sess: &Session,
-                parent_id: u32,
                 xw: x::Window,
-            ) -> Vec<WindowCookies> {
+                parent: u32,
+            ) -> Vec<(WindowCookies, Vec<u32>)> {
                 let tree_cookie = sess.x_query_tree(xw);
 
                 let cookies = WindowCookies {
                     xw,
-                    parent_id,
+                    parent,
                     geom: sess.x_get_geometry(xw),
                     state_prop: sess.x_get_property(xw, sess.0.atoms.wm_state, x::ATOM_ANY),
                     type_prop: sess.x_get_property(
@@ -133,24 +133,31 @@ impl Session {
 
                 match sess.0.conn.wait_for_reply(tree_cookie) {
                     Ok(tree) => {
-                        let parent_id = xw.resource_id();
-
-                        tree.children()
+                        let parent = xw.resource_id();
+                        let children = tree
+                            .children()
                             .iter()
-                            .map(|&cxw| get_window_cookies(sess, parent_id, cxw))
-                            .into_iter()
-                            .flatten()
-                            .chain(std::iter::once(cookies))
+                            .map(|&cxw| cxw.resource_id())
+                            .collect();
+
+                        std::iter::once((cookies, children))
+                            .chain(
+                                tree.children()
+                                    .iter()
+                                    .map(|&cxw| get_window_state(sess, cxw, parent))
+                                    .into_iter()
+                                    .flatten(),
+                            )
                             .collect()
                     }
                     Err(e) => {
                         warn!("QueryTree for window {:?} failed: {}", xw, e);
-                        vec![cookies]
+                        vec![(cookies, vec![])]
                     }
                 }
             }
 
-            for wc in get_window_cookies(self, self.0.root.resource_id(), self.0.root) {
+            for (wc, children) in get_window_state(self, self.0.root, self.0.root.resource_id()) {
                 let geom = self.0.conn.wait_for_reply(wc.geom);
                 let state_prop = self.0.conn.wait_for_reply(wc.state_prop);
                 let type_prop = self.0.conn.wait_for_reply(wc.type_prop);
@@ -166,8 +173,6 @@ impl Session {
                     (Ok(geom), Ok(state_prop), Ok(type_prop)) => {
                         let id = wc.xw.resource_id();
 
-                        wg.parents.insert(id, wc.parent_id);
-
                         // only take top-level client windows. ICCCM mandates that they will have a
                         // WM_STATE property, so any that don't are WM frames, housekeeping or
                         // other nonsense and not interesting for layout. WM_STATE==1 is
@@ -179,8 +184,9 @@ impl Session {
 
                         let w = Window {
                             sess: Session(self.0.clone()),
-                            id: id,
-                            parent_id: wc.parent_id,
+                            id,
+                            parent: wc.parent,
+                            children,
                             xw: wc.xw,
                             geom: Rect::new(
                                 (geom.x(), geom.y()).into(),
@@ -324,7 +330,7 @@ impl Window {
         let mut id = self.id;
         let mut geom = self.geom;
         while id != self.sess.0.root.resource_id() {
-            id = self.sess.window(id).parent_id;
+            id = self.sess.window(id).parent;
             geom = geom.translate(self.sess.window(id).geom.origin.to_vector());
         }
         geom.min() - self.geom.min()
