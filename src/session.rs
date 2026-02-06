@@ -279,15 +279,6 @@ impl Session {
             long_length: 512,
         })
     }
-
-    fn _window_name(&self, w: &Window) -> xcb::Result<String> {
-        let name_prop = self.0.conn.wait_for_reply(self.x_get_property(
-            w.xw,
-            self.0.atoms.net_wm_name,
-            x::ATOM_ANY,
-        ))?;
-        Ok(String::from_utf8_lossy(name_prop.value()).to_string())
-    }
 }
 
 impl std::fmt::Debug for Session {
@@ -338,5 +329,15 @@ impl Window {
                 Ok(SideOffsets2D::zero())
             }
         }
+    }
+
+    pub(crate) fn _name(&self) -> xcb::Result<String> {
+        // XXX some lazy cache for properties would be better
+        let name_prop = self.sess.0.conn.wait_for_reply(self.sess.x_get_property(
+            self.xw,
+            self.sess.0.atoms.net_wm_name,
+            x::ATOM_ANY,
+        ))?;
+        Ok(String::from_utf8_lossy(name_prop.value()).to_string())
     }
 }
