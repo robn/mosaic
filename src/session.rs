@@ -81,7 +81,7 @@ pub struct Window {
     pub id: u32,
     pub parent: u32,
     pub children: Vec<u32>,
-    pub geom: Rect,
+    pub geom: Box2D,
     pub typ: WindowType,
     pub selectable: bool,
 }
@@ -208,7 +208,7 @@ impl Session {
                             parent: wc.parent,
                             children,
                             xw: wc.xw,
-                            geom: Rect::new(
+                            geom: Box2D::from_origin_and_size(
                                 (geom.x(), geom.y()).into(),
                                 (geom.width() as i16, geom.height() as i16).into(),
                             ),
@@ -355,14 +355,15 @@ impl std::fmt::Debug for Session {
 }
 
 impl Window {
-    pub(crate) fn abs_xlate(&self) -> Vector2D {
-        let mut id = self.id;
+    pub(crate) fn abs_geom(&self) -> Box2D {
+        let mut parent = self.parent;
         let mut geom = self.geom;
-        while id != self.sess.0.root.resource_id() {
-            id = self.sess.window(id).parent;
-            geom = geom.translate(self.sess.window(id).geom.origin.to_vector());
+        while parent > 0 && parent != self.sess.root().id {
+            let pw = self.sess.window(parent);
+            geom = geom.translate(pw.geom.min.to_vector());
+            parent = pw.parent;
         }
-        geom.min() - self.geom.min()
+        geom
     }
 
     pub(crate) fn frame_extents(&self) -> xcb::Result<SideOffsets2D> {
@@ -408,7 +409,7 @@ impl Window {
         Ok(String::from_utf8_lossy(name_prop.value()).to_string())
     }
 
-    pub(crate) fn set_geom(&self, geom: &Rect) -> xcb::Result<()> {
+    pub(crate) fn set_geom(&self, geom: &Box2D) -> xcb::Result<()> {
         let ev = x::ClientMessageEvent::new(
             self.xw,
             self.sess.0.atoms.net_moveresize_window,
@@ -419,10 +420,10 @@ impl Window {
                     | MoveResizeWindowFlags::HEIGHT
                     | MoveResizeWindowFlags::GRAVITY_NORTH_WEST)
                     .bits(),
-                geom.origin.x as u32,
-                geom.origin.y as u32,
-                geom.size.width as u32,
-                geom.size.height as u32,
+                geom.min.x as u32,
+                geom.min.y as u32,
+                geom.width() as u32,
+                geom.height() as u32,
             ]),
         );
 

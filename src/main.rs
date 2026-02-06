@@ -119,47 +119,50 @@ fn main() -> xcb::Result<()> {
 
     debug!("target window id: {}", target_id);
 
-    let current_geom = sess.window(target_id).geom;
-    debug!("target geom: {:?}", current_geom);
+    let target = sess.window(target_id);
 
-    let current_box = current_geom.to_box2d();
-    debug!("target current box: {:?}", current_box);
+    let frame = target.frame_extents()?;
+    debug!("target frame extents: {:?}", frame);
 
-    let frame_extents = sess.window(target_id).frame_extents()?;
-    debug!("target frame extents: {:?}", frame_extents);
+    let current_geom = {
+        let geom = target.geom;
+        debug!("target geom: {:?}", geom);
 
-    let unframed_box = current_box.outer_box(frame_extents);
-    debug!("target unframed box: {:?}", unframed_box);
+        let unframed = geom.outer_box(frame);
+        debug!("target unframed geom: {:?}", unframed);
 
-    let current_box = unframed_box;
+        unframed
+    };
 
-    let avail_box = match sess
+    let avail_geom = match sess
         .desktops()
         .filter_map(|&id| {
             let w = sess.window(id);
-            let desktop = w.geom.translate(w.abs_xlate()).to_box2d();
-            debug!("desktop {} box: {:?}", id, desktop);
-            desktop.contains(current_box.min).then(|| {
+            let geom = w.abs_geom();
+            debug!("desktop {} box: {:?}", id, geom);
+            geom.contains(current_geom.min).then(|| {
                 debug!("target {} is on desktop {}", target_id, id);
-                desktop
+                geom
             })
         })
+        // XXX take the first one. better probably would be to overlap with the desktop, and take
+        // the one that has the largest overlap. or some other notion of "best" idk
         .next()
     {
-        Some(desktop) => desktop,
+        Some(geom) => geom,
         None => {
             warn!("couldn't determine desktop for window id {}", target_id);
             return Ok(());
         }
     };
 
-    debug!("initial avail box: {:?}", avail_box);
+    debug!("desktop avail geom: {:?}", avail_geom);
 
-    let avail_box = sess.docks().fold(avail_box, |avail, &id| {
+    let avail_geom = sess.docks().fold(avail_geom, |avail, &id| {
         let w = sess.window(id);
-        let dock = w.geom.translate(w.abs_xlate()).to_box2d();
-        debug!("dock {} box: {:?}", id, dock);
-        match avail.intersection(&dock) {
+        let geom = w.abs_geom();
+        debug!("dock {} box: {:?}", id, geom);
+        match avail.intersection(&geom) {
             Some(overlap) if overlap == avail => {
                 debug!("dock {} covers avail area, ignoring it", id);
                 avail
@@ -203,26 +206,30 @@ fn main() -> xcb::Result<()> {
         }
     });
 
-    debug!("final avail box: {:?}", avail_box);
+    debug!("avail geom: {:?}", avail_geom);
 
-    let new_box = compute_new_box(&current_box, &avail_box, args.horiz, args.vert);
-    debug!("target new unframed box: {:?}", new_box);
+    let new_geom = {
+        let geom = compute_new_geom(&current_geom, &avail_geom, args.horiz, args.vert);
+        debug!(
+            "computed new geom (hspec={:?} vspec={:?}: {:?}",
+            args.horiz, args.vert, geom
+        );
 
-    let framed_box = new_box.inner_box(frame_extents);
-    debug!("target new framed box: {:?}", framed_box);
+        let framed = geom.inner_box(frame);
+        debug!("computed new framed geom: {:?}", framed);
 
-    let offset_box = framed_box.translate((-frame_extents.left, -frame_extents.top).into());
-    debug!("target new offset box: {:?}", offset_box);
+        let adjusted = framed.translate((-frame.left, -frame.top).into());
+        debug!("computed new adjusted box: {:?}", adjusted);
 
-    let new_geom = offset_box.to_rect();
-    debug!("target new geom: {:?}", new_geom);
+        adjusted
+    };
 
     sess.window(target_id).set_geom(&new_geom)?;
 
     Ok(())
 }
 
-fn compute_new_box(current: &Box2D, avail: &Box2D, hspec: HorizSpec, vspec: VertSpec) -> Box2D {
+fn compute_new_geom(current: &Box2D, avail: &Box2D, hspec: HorizSpec, vspec: VertSpec) -> Box2D {
     let (x1, x2) = compute_new_horiz(current, avail, hspec);
     let (y1, y2) = compute_new_vert(current, avail, vspec);
     Box2D::new((x1, y1).into(), (x2, y2).into())
