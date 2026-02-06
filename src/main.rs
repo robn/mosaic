@@ -125,7 +125,7 @@ fn main() -> xcb::Result<()> {
     debug!("target frame extents: {:?}", frame);
 
     let current_geom = {
-        let geom = target.geom;
+        let geom = target.abs_geom();
         debug!("target geom: {:?}", geom);
 
         let unframed = geom.outer_box(frame);
