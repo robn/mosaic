@@ -143,7 +143,7 @@ fn main() -> xcb::Result<()> {
             let w = sess.window(id);
             let geom = w.abs_geom();
             debug!("desktop {} box: {:?}", id, geom);
-            geom.contains(current_geom.min).then(|| {
+            geom.intersects(&current_geom).then(|| {
                 debug!("target {} is on desktop {}", target_id, id);
                 geom
             })
