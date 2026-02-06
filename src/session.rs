@@ -48,8 +48,8 @@ struct SessionImpl {
 pub struct WindowGroup {
     windows: BTreeMap<u32, Window>,
     pub root: Option<u32>,
-    pub desktop: BTreeSet<u32>,
-    pub dock: BTreeSet<u32>,
+    desktop: BTreeSet<u32>,
+    dock: BTreeSet<u32>,
     pub selectable: BTreeSet<u32>,
 }
 
@@ -98,6 +98,13 @@ impl Session {
 
     pub(crate) fn window(&self, id: u32) -> &Window {
         &self.window_group().windows[&id]
+    }
+
+    pub(crate) fn desktops(&self) -> impl Iterator<Item = &u32> {
+        self.window_group().desktop.iter()
+    }
+    pub(crate) fn docks(&self) -> impl Iterator<Item = &u32> {
+        self.window_group().dock.iter()
     }
 
     pub(crate) fn window_group(&self) -> &WindowGroup {

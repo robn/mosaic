@@ -98,7 +98,7 @@ fn main() -> xcb::Result<()> {
     let wg = sess.window_group();
     //debug!("{:#?}", wg);
 
-    for &desktop_id in wg.desktop.iter() {
+    for &desktop_id in sess.desktops() {
         let desktop = sess.window(desktop_id);
         debug!("desktop geom: {:?}", desktop.geom);
     }
@@ -197,9 +197,8 @@ fn main() -> xcb::Result<()> {
 
     let current_box = unframed_box;
 
-    let avail_box = match wg
-        .desktop
-        .iter()
+    let avail_box = match sess
+        .desktops()
         .filter_map(|&id| {
             let w = sess.window(id);
             let desktop = w.geom.translate(w.abs_xlate()).to_box2d();
@@ -220,7 +219,7 @@ fn main() -> xcb::Result<()> {
 
     debug!("initial avail box: {:?}", avail_box);
 
-    let avail_box = wg.dock.iter().fold(avail_box, |avail, &id| {
+    let avail_box = sess.docks().fold(avail_box, |avail, &id| {
         let w = sess.window(id);
         let dock = w.geom.translate(w.abs_xlate()).to_box2d();
         debug!("dock {} box: {:?}", id, dock);
