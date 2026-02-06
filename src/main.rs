@@ -96,23 +96,15 @@ fn main() -> xcb::Result<()> {
     let sess = Session::init()?;
 
     let target_id = 'target: {
-        let id = match target_arg {
-            TargetArgs::Id(id) => id,
-            TargetArgs::Active => {
-                let active_prop = sess.conn().wait_for_reply(sess.x_get_property(
-                    sess.root(),
-                    sess.atoms().net_active_window,
-                    x::ATOM_WINDOW,
-                ))?;
-                active_prop.value()[0]
-            }
-            TargetArgs::Select => select_window(&sess)?,
+        let w = match target_arg {
+            TargetArgs::Id(id) => sess.window(id),
+            TargetArgs::Active => sess.active_window()?,
+            TargetArgs::Select => sess.select_window()?,
             TargetArgs::None => unreachable!(),
         };
 
-        let w = sess.window(id);
         if w.selectable {
-            break 'target id;
+            break 'target w.id;
         }
 
         let mut parent = w.parent;
@@ -139,7 +131,10 @@ fn main() -> xcb::Result<()> {
             break 'target child;
         }
 
-        warn!("couldn't resolve window id {} to a top client window", id);
+        warn!(
+            "couldn't resolve target {:?} to a top client window",
+            target_arg
+        );
         return Ok(());
     };
 
@@ -274,63 +269,6 @@ fn main() -> xcb::Result<()> {
     sess.conn().flush()?;
 
     Ok(())
-}
-
-fn select_window(sess: &Session) -> xcb::Result<u32> {
-    let font = sess.conn().generate_id();
-    sess.conn().send_request(&x::OpenFont {
-        fid: font,
-        name: b"cursor",
-    });
-
-    let cursor = sess.conn().generate_id();
-    sess.conn().send_request(&x::CreateGlyphCursor {
-        cid: cursor,
-        source_font: font,
-        mask_font: font,
-        source_char: 34, // XC_crosshair
-        mask_char: 35,
-        fore_red: 0x0000,
-        fore_green: 0x0000,
-        fore_blue: 0x0000,
-        back_red: 0xffff,
-        back_green: 0xffff,
-        back_blue: 0xffff,
-    });
-
-    sess.conn()
-        .wait_for_reply(sess.conn().send_request(&x::GrabPointer {
-            owner_events: false,
-            grab_window: sess.root(),
-            event_mask: x::EventMask::BUTTON_PRESS | x::EventMask::BUTTON_RELEASE,
-            pointer_mode: x::GrabMode::Sync,
-            keyboard_mode: x::GrabMode::Async,
-            confine_to: sess.root(),
-            cursor: cursor,
-            time: x::CURRENT_TIME,
-        }))?;
-
-    let selected = loop {
-        sess.conn().send_request(&x::AllowEvents {
-            mode: x::Allow::SyncPointer,
-            time: x::CURRENT_TIME,
-        });
-        sess.conn().flush()?;
-
-        if let xcb::Event::X(x::Event::ButtonPress(ev)) = sess.conn().wait_for_event()? {
-            let w = ev.child();
-            if !w.is_none() {
-                break w;
-            }
-        }
-    };
-
-    sess.conn().send_request(&x::UngrabPointer {
-        time: x::CURRENT_TIME,
-    });
-    sess.conn().flush()?;
-
-    Ok(selected.resource_id())
 }
 
 fn compute_new_box(current: &Box2D, avail: &Box2D, hspec: HorizSpec, vspec: VertSpec) -> Box2D {

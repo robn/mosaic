@@ -16,7 +16,7 @@ xcb::atoms_struct! {
         net_wm_window_type_dock => b"_NET_WM_WINDOW_TYPE_DOCK",
         net_wm_window_type_desktop => b"_NET_WM_WINDOW_TYPE_DESKTOP",
 
-        pub net_active_window => b"_NET_ACTIVE_WINDOW",
+        net_active_window => b"_NET_ACTIVE_WINDOW",
 
         net_frame_extents => b"_NET_FRAME_EXTENTS",
         gtk_frame_extents => b"_GTK_FRAME_EXTENTS",
@@ -237,6 +237,74 @@ impl Session {
         })
     }
 
+    pub(crate) fn active_window(&self) -> xcb::Result<&Window> {
+        let active_prop = self.0.conn.wait_for_reply(self.x_get_property(
+            self.0.root,
+            self.0.atoms.net_active_window,
+            x::ATOM_WINDOW,
+        ))?;
+        let id = active_prop.value()[0];
+        Ok(self.window(id))
+    }
+
+    pub(crate) fn select_window(&self) -> xcb::Result<&Window> {
+        let font = self.0.conn.generate_id();
+        self.0.conn.send_request(&x::OpenFont {
+            fid: font,
+            name: b"cursor",
+        });
+
+        let cursor = self.0.conn.generate_id();
+        self.0.conn.send_request(&x::CreateGlyphCursor {
+            cid: cursor,
+            source_font: font,
+            mask_font: font,
+            source_char: 34, // XC_crosshair
+            mask_char: 35,
+            fore_red: 0x0000,
+            fore_green: 0x0000,
+            fore_blue: 0x0000,
+            back_red: 0xffff,
+            back_green: 0xffff,
+            back_blue: 0xffff,
+        });
+
+        self.0
+            .conn
+            .wait_for_reply(self.0.conn.send_request(&x::GrabPointer {
+                owner_events: false,
+                grab_window: self.0.root,
+                event_mask: x::EventMask::BUTTON_PRESS | x::EventMask::BUTTON_RELEASE,
+                pointer_mode: x::GrabMode::Sync,
+                keyboard_mode: x::GrabMode::Async,
+                confine_to: self.0.root,
+                cursor: cursor,
+                time: x::CURRENT_TIME,
+            }))?;
+
+        let selected = loop {
+            self.0.conn.send_request(&x::AllowEvents {
+                mode: x::Allow::SyncPointer,
+                time: x::CURRENT_TIME,
+            });
+            self.0.conn.flush()?;
+
+            if let xcb::Event::X(x::Event::ButtonPress(ev)) = self.0.conn.wait_for_event()? {
+                let w = ev.child();
+                if !w.is_none() {
+                    break w;
+                }
+            }
+        };
+
+        self.0.conn.send_request(&x::UngrabPointer {
+            time: x::CURRENT_TIME,
+        });
+        self.0.conn.flush()?;
+
+        Ok(self.window(selected.resource_id()))
+    }
+
     // legacy accessors
     pub(crate) fn conn(&self) -> &xcb::Connection {
         &self.0.conn
@@ -258,12 +326,7 @@ impl Session {
         })
     }
 
-    pub(crate) fn x_get_property(
-        &self,
-        xw: x::Window,
-        prop: x::Atom,
-        ty: x::Atom,
-    ) -> x::GetPropertyCookie {
+    fn x_get_property(&self, xw: x::Window, prop: x::Atom, ty: x::Atom) -> x::GetPropertyCookie {
         self.0.conn.send_request(&x::GetProperty {
             window: xw,
             delete: false,
