@@ -61,6 +61,7 @@ pub struct WindowGroup {
 pub struct Window {
     sess: Session,
     pub id: u32,
+    pub parent_id: u32,
     pub xw: x::Window,
     pub geom: Rect,
     typ: WindowType,
@@ -179,6 +180,7 @@ impl Session {
                         let w = Window {
                             sess: Session(self.0.clone()),
                             id: id,
+                            parent_id: wc.parent_id,
                             xw: wc.xw,
                             geom: Rect::new(
                                 (geom.x(), geom.y()).into(),
@@ -281,16 +283,6 @@ impl Session {
         Ok(String::from_utf8_lossy(name_prop.value()).to_string())
     }
 
-    pub(crate) fn window_abs_xlate(&self, w: &Window, wg: &WindowGroup) -> Vector2D {
-        let mut id = w.id;
-        let mut geom = w.geom;
-        while id != self.0.root.resource_id() {
-            id = wg.parents[&id];
-            geom = geom.translate(self.window(id).geom.origin.to_vector());
-        }
-        geom.min() - w.geom.min()
-    }
-
     pub(crate) fn window_frame_extents(
         &self,
         w: &Window,
@@ -324,5 +316,17 @@ impl Session {
 impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Session").finish_non_exhaustive()
+    }
+}
+
+impl Window {
+    pub(crate) fn abs_xlate(&self) -> Vector2D {
+        let mut id = self.id;
+        let mut geom = self.geom;
+        while id != self.sess.0.root.resource_id() {
+            id = self.sess.window(id).parent_id;
+            geom = geom.translate(self.sess.window(id).geom.origin.to_vector());
+        }
+        geom.min() - self.geom.min()
     }
 }

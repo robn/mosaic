@@ -156,7 +156,7 @@ fn main() -> xcb::Result<()> {
 
         while id > 0 && id != sess.root().resource_id() {
             debug!("requested window {} not selectable, checking parent", id);
-            id = wg.parents[&id];
+            id = sess.window(id).parent_id;
             if wg.selectable.contains(&id) {
                 debug!("parent window {} selectable, using it", id);
                 break 'target id;
@@ -206,11 +206,8 @@ fn main() -> xcb::Result<()> {
         .desktop
         .iter()
         .filter_map(|&id| {
-            let desktop = sess
-                .window(id)
-                .geom
-                .translate(sess.window_abs_xlate(sess.window(id), &wg))
-                .to_box2d();
+            let w = sess.window(id);
+            let desktop = w.geom.translate(w.abs_xlate()).to_box2d();
             debug!("desktop {} box: {:?}", id, desktop);
             desktop.contains(current_box.min).then(|| {
                 debug!("target {} is on desktop {}", target_id, id);
@@ -229,12 +226,8 @@ fn main() -> xcb::Result<()> {
     debug!("initial avail box: {:?}", avail_box);
 
     let avail_box = wg.dock.iter().fold(avail_box, |avail, &id| {
-        debug!("dock {} geom: {:?}", id, sess.window(id).geom);
-        let dock = sess
-            .window(id)
-            .geom
-            .translate(sess.window_abs_xlate(sess.window(id), &wg))
-            .to_box2d();
+        let w = sess.window(id);
+        let dock = w.geom.translate(w.abs_xlate()).to_box2d();
         debug!("dock {} box: {:?}", id, dock);
         match avail.intersection(&dock) {
             Some(overlap) if overlap == avail => {
