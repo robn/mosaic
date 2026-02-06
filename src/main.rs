@@ -242,48 +242,20 @@ fn compute_new_horiz(current: &Box2D, avail: &Box2D, hspec: HorizSpec) -> (i16, 
 
         // Leftmost 25/50/75%
         HorizSpec::Left25 => (avail.min.x, avail.min.x + avail.width().div_euclid(4)),
-        HorizSpec::Left50 => (avail.min.x, avail.min.x + avail.width().div_euclid(2)),
+        HorizSpec::Left50 | HorizSpec::Left => {
+            (avail.min.x, avail.min.x + avail.width().div_euclid(2))
+        }
         HorizSpec::Left75 => (avail.min.x, avail.min.x + (avail.width() * 3).div_euclid(4)),
 
         // Rightmost 25/50/75%
         HorizSpec::Right25 => (avail.max.x - avail.width().div_euclid(4), avail.max.x),
-        HorizSpec::Right50 => (avail.max.x - avail.width().div_euclid(2), avail.max.x),
+        HorizSpec::Right50 | HorizSpec::Right => {
+            (avail.max.x - avail.width().div_euclid(2), avail.max.x)
+        }
         HorizSpec::Right75 => (avail.max.x - (avail.width() * 3).div_euclid(4), avail.max.x),
 
         // Full width
         HorizSpec::Full => (avail.min.x, avail.max.x),
-
-        // Cycle through left 25/50/75
-        // XXX never used these really and still not convinced
-        HorizSpec::Left => {
-            let (x1_25, x2_25) = compute_new_horiz(current, avail, HorizSpec::Left25);
-            let (x1_50, x2_50) = compute_new_horiz(current, avail, HorizSpec::Left50);
-            let (x1_75, x2_75) = compute_new_horiz(current, avail, HorizSpec::Left75);
-
-            if (current.min.x, current.max.x) == (x1_50, x2_50) {
-                (x1_25, x2_25)
-            } else if (current.min.x, current.max.x) == (x1_25, x2_25) {
-                (x1_75, x2_75)
-            } else {
-                (x1_50, x2_50)
-            }
-        }
-
-        // Cycle through right 25/50/75
-        // XXX ditto
-        HorizSpec::Right => {
-            let (x1_25, x2_25) = compute_new_horiz(current, avail, HorizSpec::Right25);
-            let (x1_50, x2_50) = compute_new_horiz(current, avail, HorizSpec::Right50);
-            let (x1_75, x2_75) = compute_new_horiz(current, avail, HorizSpec::Right75);
-
-            if (current.min.x, current.max.x) == (x1_50, x2_50) {
-                (x1_25, x2_25)
-            } else if (current.min.x, current.max.x) == (x1_25, x2_25) {
-                (x1_75, x2_75)
-            } else {
-                (x1_50, x2_50)
-            }
-        }
     }
 }
 
