@@ -6,7 +6,6 @@ use crate::session::Session;
 
 use clap::{ArgGroup, Parser, ValueEnum};
 use log::{debug, warn};
-use xcb::x;
 
 // XXX use ArgGroup enums for target: https://github.com/clap-rs/clap/issues/2621
 #[derive(Parser, Debug)]
@@ -56,26 +55,6 @@ enum TargetArgs {
     Id(u32),
     Select,
     Active,
-}
-
-bitflags::bitflags! {
-    struct MoveResizeWindowFlags: u32 {
-        const GRAVITY_IMPLIED    = 0;
-        const GRAVITY_NORTH_WEST = 1;
-        const GRAVITY_NORTH      = 2;
-        const GRAVITY_NORTH_EAST = 3;
-        const GRAVITY_WEST       = 4;
-        const GRAVITY_CENTER     = 5;
-        const GRAVITY_EAST       = 6;
-        const GRAVITY_SOUTH_WEST = 7;
-        const GRAVITY_SOUTH      = 8;
-        const GRAVITY_SOUTH_EAST = 9;
-        const GRAVITY_STATIC     = 10;
-        const X                  = 1 << 8;
-        const Y                  = 1 << 9;
-        const WIDTH              = 1 << 10;
-        const HEIGHT             = 1 << 11;
-    }
 }
 
 fn main() -> xcb::Result<()> {
@@ -238,35 +217,7 @@ fn main() -> xcb::Result<()> {
     let new_geom = offset_box.to_rect();
     debug!("target new geom: {:?}", new_geom);
 
-    let ev = {
-        let target = sess.window(target_id);
-
-        x::ClientMessageEvent::new(
-            target.xw,
-            sess.atoms().net_moveresize_window,
-            x::ClientMessageData::Data32([
-                (MoveResizeWindowFlags::X
-                    | MoveResizeWindowFlags::Y
-                    | MoveResizeWindowFlags::WIDTH
-                    | MoveResizeWindowFlags::HEIGHT
-                    | MoveResizeWindowFlags::GRAVITY_NORTH_WEST)
-                    .bits(),
-                new_geom.origin.x as u32,
-                new_geom.origin.y as u32,
-                new_geom.size.width as u32,
-                new_geom.size.height as u32,
-            ]),
-        )
-    };
-
-    sess.conn().send_request(&x::SendEvent {
-        propagate: false,
-        destination: x::SendEventDest::Window(sess.root().xw),
-        event_mask: x::EventMask::SUBSTRUCTURE_REDIRECT | x::EventMask::SUBSTRUCTURE_NOTIFY,
-        event: &ev,
-    });
-
-    sess.conn().flush()?;
+    sess.window(target_id).set_geom(&new_geom)?;
 
     Ok(())
 }

@@ -8,7 +8,7 @@ use xcb::{x, Xid};
 
 xcb::atoms_struct! {
     #[derive(Copy, Clone, Debug)]
-    pub struct Atoms {
+    struct Atoms {
         wm_state => b"WM_STATE",
 
         net_wm_window_type => b"_NET_WM_WINDOW_TYPE",
@@ -21,9 +21,29 @@ xcb::atoms_struct! {
         net_frame_extents => b"_NET_FRAME_EXTENTS",
         gtk_frame_extents => b"_GTK_FRAME_EXTENTS",
 
-        pub net_moveresize_window => b"_NET_MOVERESIZE_WINDOW",
+        net_moveresize_window => b"_NET_MOVERESIZE_WINDOW",
 
         net_wm_name => b"_NET_WM_NAME",
+    }
+}
+
+bitflags::bitflags! {
+    struct MoveResizeWindowFlags: u32 {
+        const GRAVITY_IMPLIED    = 0;
+        const GRAVITY_NORTH_WEST = 1;
+        const GRAVITY_NORTH      = 2;
+        const GRAVITY_NORTH_EAST = 3;
+        const GRAVITY_WEST       = 4;
+        const GRAVITY_CENTER     = 5;
+        const GRAVITY_EAST       = 6;
+        const GRAVITY_SOUTH_WEST = 7;
+        const GRAVITY_SOUTH      = 8;
+        const GRAVITY_SOUTH_EAST = 9;
+        const GRAVITY_STATIC     = 10;
+        const X                  = 1 << 8;
+        const Y                  = 1 << 9;
+        const WIDTH              = 1 << 10;
+        const HEIGHT             = 1 << 11;
     }
 }
 
@@ -45,7 +65,7 @@ struct SessionImpl {
 // its conceptually part of Session/SessionImpl, but held separately so it can be lazily
 // constructed and (in the future) refreshed
 #[derive(Debug, Default)]
-pub struct WindowGroup {
+struct WindowGroup {
     windows: BTreeMap<u32, Window>,
     desktop: BTreeSet<u32>,
     dock: BTreeSet<u32>,
@@ -57,10 +77,10 @@ pub struct WindowGroup {
 #[derive(Debug)]
 pub struct Window {
     sess: Session,
+    xw: x::Window,
     pub id: u32,
     pub parent: u32,
     pub children: Vec<u32>,
-    pub xw: x::Window,
     pub geom: Rect,
     pub typ: WindowType,
     pub selectable: bool,
@@ -306,14 +326,6 @@ impl Session {
         Ok(self.window(selected.resource_id()))
     }
 
-    // legacy accessors
-    pub(crate) fn conn(&self) -> &xcb::Connection {
-        &self.0.conn
-    }
-    pub(crate) fn atoms(&self) -> &Atoms {
-        &self.0.atoms
-    }
-
     fn x_query_tree(&self, xw: x::Window) -> x::QueryTreeCookie {
         self.0.conn.send_request(&x::QueryTree { window: xw })
     }
@@ -394,5 +406,37 @@ impl Window {
             x::ATOM_ANY,
         ))?;
         Ok(String::from_utf8_lossy(name_prop.value()).to_string())
+    }
+
+    pub(crate) fn set_geom(&self, geom: &Rect) -> xcb::Result<()> {
+        let ev = x::ClientMessageEvent::new(
+            self.xw,
+            self.sess.0.atoms.net_moveresize_window,
+            x::ClientMessageData::Data32([
+                (MoveResizeWindowFlags::X
+                    | MoveResizeWindowFlags::Y
+                    | MoveResizeWindowFlags::WIDTH
+                    | MoveResizeWindowFlags::HEIGHT
+                    | MoveResizeWindowFlags::GRAVITY_NORTH_WEST)
+                    .bits(),
+                geom.origin.x as u32,
+                geom.origin.y as u32,
+                geom.size.width as u32,
+                geom.size.height as u32,
+            ]),
+        );
+
+        self.sess.0.conn.send_request(&x::SendEvent {
+            propagate: false,
+            destination: x::SendEventDest::Window(self.sess.root().xw),
+            event_mask: x::EventMask::SUBSTRUCTURE_REDIRECT | x::EventMask::SUBSTRUCTURE_NOTIFY,
+            event: &ev,
+        });
+
+        self.sess.0.conn.flush()?;
+
+        // XXX window geom no longer matches actual geom, schedule refresh somehow
+
+        Ok(())
     }
 }
