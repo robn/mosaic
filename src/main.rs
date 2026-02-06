@@ -95,9 +95,6 @@ fn main() -> xcb::Result<()> {
 
     let sess = Session::init()?;
 
-    let wg = sess.window_group();
-    //debug!("{:#?}", wg);
-
     for &desktop_id in sess.desktops() {
         let desktop = sess.window(desktop_id);
         debug!("desktop geom: {:?}", desktop.geom);
@@ -134,7 +131,7 @@ fn main() -> xcb::Result<()> {
     // we have to do this first, because we need its position so we can decide which desktop to use
     // as a reference
     let target_id = 'target: {
-        let mut id = match target_arg {
+        let id = match target_arg {
             TargetArgs::Id(id) => id,
             TargetArgs::Active => {
                 let active_prop = sess.conn().wait_for_reply(sess.x_get_property(
@@ -148,36 +145,36 @@ fn main() -> xcb::Result<()> {
             TargetArgs::None => unreachable!(),
         };
 
-        if wg.selectable.contains(&id) {
+        let w = sess.window(id);
+        if w.selectable {
             break 'target id;
         }
 
-        let orig_id = id;
-
-        while id > 0 && id != sess.root().resource_id() {
-            debug!("requested window {} not selectable, checking parent", id);
-            id = sess.window(id).parent;
-            if wg.selectable.contains(&id) {
-                debug!("parent window {} selectable, using it", id);
-                break 'target id;
+        let mut parent = w.parent;
+        while parent > 0 && parent != sess.root().resource_id() {
+            debug!(
+                "requested window {} not selectable, checking parent",
+                parent
+            );
+            let pw = sess.window(parent);
+            if pw.selectable {
+                debug!("parent window {} selectable, using it", parent);
+                break 'target parent;
             }
+            parent = pw.parent;
         }
 
-        if let Some(id) = sess
-            .window(orig_id)
+        if let Some(child) = w
             .children
             .iter()
-            .filter_map(|&cid| wg.selectable.contains(&cid).then_some(cid))
+            .filter_map(|&cid| sess.window(cid).selectable.then_some(cid))
             .next()
         {
-            debug!("child window {} selectable, using it", id);
-            break 'target id;
+            debug!("child window {} selectable, using it", child);
+            break 'target child;
         }
 
-        warn!(
-            "couldn't resolve window id {} to a top client window",
-            orig_id
-        );
+        warn!("couldn't resolve window id {} to a top client window", id);
         return Ok(());
     };
 

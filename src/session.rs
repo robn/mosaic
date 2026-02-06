@@ -50,7 +50,6 @@ pub struct WindowGroup {
     pub root: Option<u32>,
     desktop: BTreeSet<u32>,
     dock: BTreeSet<u32>,
-    pub selectable: BTreeSet<u32>,
 }
 
 // Window represents a wraps a single X11 window. It has a reference to the session it came from so
@@ -64,10 +63,11 @@ pub struct Window {
     pub children: Vec<u32>,
     pub xw: x::Window,
     pub geom: Rect,
-    typ: WindowType,
+    pub typ: WindowType,
+    pub selectable: bool,
 }
 #[derive(Debug)]
-enum WindowType {
+pub enum WindowType {
     Normal,
     Dock,
     Desktop,
@@ -107,7 +107,7 @@ impl Session {
         self.window_group().dock.iter()
     }
 
-    pub(crate) fn window_group(&self) -> &WindowGroup {
+    fn window_group(&self) -> &WindowGroup {
         self.0.wg.get_or_init(|| {
             let mut wg = WindowGroup::default();
 
@@ -180,15 +180,6 @@ impl Session {
                     (Ok(geom), Ok(state_prop), Ok(type_prop)) => {
                         let id = wc.xw.resource_id();
 
-                        // only take top-level client windows. ICCCM mandates that they will have a
-                        // WM_STATE property, so any that don't are WM frames, housekeeping or
-                        // other nonsense and not interesting for layout. WM_STATE==1 is
-                        // NormalState; its rare to see anything else but might as well be
-                        // defensive.
-                        //
-                        // we also take the root here.  it is doesn't have WM_STATE, but we still
-                        // want its need its geometry
-
                         let w = Window {
                             sess: Session(self.0.clone()),
                             id,
@@ -217,29 +208,25 @@ impl Session {
                                     },
                                 },
                             },
+                            //
+                            // ICCCM mandates client root windows have WM_STATE, and we are only
+                            // interested in NormalState (1)
+                            selectable: state_prop.r#type() == self.0.atoms.wm_state
+                                && state_prop.value::<u32>()[0] == 1,
                         };
 
-                        if wc.xw == self.0.root
-                            || state_prop.r#type() == self.0.atoms.wm_state
-                                && state_prop.value::<u32>()[0] == 1
-                        {
-                            match w.typ {
-                                WindowType::Normal => {
-                                    // XXX actually drill down to child like the select thing does
-                                    wg.selectable.insert(id);
-                                    ()
-                                }
-                                WindowType::Dock => {
-                                    wg.dock.insert(id);
-                                    ()
-                                }
-                                WindowType::Desktop => {
-                                    wg.desktop.insert(id);
-                                    ()
-                                }
-                                WindowType::Root => wg.root = Some(id),
+                        match w.typ {
+                            WindowType::Dock => {
+                                wg.dock.insert(id);
+                                ()
                             }
-                        }
+                            WindowType::Desktop => {
+                                wg.desktop.insert(id);
+                                ()
+                            }
+                            WindowType::Root => wg.root = Some(id),
+                            _ => {}
+                        };
 
                         wg.windows.insert(id, w);
                     }
