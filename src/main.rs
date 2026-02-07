@@ -4,8 +4,9 @@ mod session;
 use crate::geom::*;
 use crate::session::Session;
 
+use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, ValueEnum};
-use log::{debug, warn};
+use log::debug;
 
 // XXX use ArgGroup enums for target: https://github.com/clap-rs/clap/issues/2621
 #[derive(Parser, Debug)]
@@ -60,7 +61,7 @@ enum TargetArgs {
     Active,
 }
 
-fn main() -> xcb::Result<()> {
+fn main() -> Result<()> {
     let args = RootArgs::parse();
 
     let target_arg = if let Some(id) = args.id {
@@ -75,13 +76,15 @@ fn main() -> xcb::Result<()> {
 
     env_logger::Builder::new().parse_default_env().init();
 
-    let sess = Session::init()?;
+    let sess = Session::init().context("failed to connect to X11 server")?;
 
     let target_id = 'target: {
         let w = match target_arg {
             TargetArgs::Id(id) => sess.window(id),
-            TargetArgs::Active => sess.active_window()?,
-            TargetArgs::Select => sess.select_window()?,
+            TargetArgs::Active => sess
+                .active_window()
+                .context("failed to get active window")?,
+            TargetArgs::Select => sess.select_window().context("failed to select window")?,
             TargetArgs::None => unreachable!(),
         };
 
@@ -113,18 +116,19 @@ fn main() -> xcb::Result<()> {
             break 'target child;
         }
 
-        warn!(
-            "couldn't resolve target {:?} to a top client window",
+        anyhow::bail!(
+            "couldn't resolve target {:?} to a selectable window",
             target_arg
         );
-        return Ok(());
     };
 
     debug!("target window id: {}", target_id);
 
     let target = sess.window(target_id);
 
-    let frame = target.frame_extents()?;
+    let frame = target
+        .frame_extents()
+        .context("failed to get window frame extents")?;
     debug!("target frame extents: {:?}", frame);
 
     let current_geom = {
@@ -137,7 +141,7 @@ fn main() -> xcb::Result<()> {
         unframed
     };
 
-    let avail_geom = match sess
+    let avail_geom = sess
         .desktops()
         .filter_map(|&id| {
             let w = sess.window(id);
@@ -151,13 +155,12 @@ fn main() -> xcb::Result<()> {
         // XXX take the first one. better probably would be to overlap with the desktop, and take
         // the one that has the largest overlap. or some other notion of "best" idk
         .next()
-    {
-        Some(geom) => geom,
-        None => {
-            warn!("couldn't determine desktop for window id {}", target_id);
-            return Ok(());
-        }
-    };
+        .with_context(|| {
+            format!(
+                "couldn't determine which desktop contains window {}",
+                target_id
+            )
+        })?;
 
     debug!("desktop avail geom: {:?}", avail_geom);
 
@@ -224,7 +227,9 @@ fn main() -> xcb::Result<()> {
         framed
     };
 
-    sess.window(target_id).set_geom(&new_geom)?;
+    sess.window(target_id)
+        .set_geom(&new_geom)
+        .context("failed to move/resize window")?;
 
     Ok(())
 }
