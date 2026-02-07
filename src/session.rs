@@ -92,7 +92,7 @@ pub struct Window {
     pub typ: WindowType,
     pub selectable: bool,
 }
-#[derive(Debug)]
+#[derive(PartialEq, Debug)]
 pub enum WindowType {
     Normal,
     Dock,
@@ -209,6 +209,31 @@ impl Session {
                     (Ok(geom), Ok(state_prop), Ok(type_prop)) => {
                         let id = wc.xw.resource_id();
 
+                        let typ = match wc.xw == self.0.root {
+                            true => WindowType::Root,
+                            false => match type_prop.length() {
+                                // some clients (Spotify) do not set a _NET_WM_WINDOW_TYPE at all.
+                                // we already. we just treat them as TYPE_NORMAL here, because
+                                // unless they've been selected somehow it won't even matter.
+                                0 => WindowType::Normal,
+                                _ => match type_prop.value::<x::Atom>()[0] {
+                                    v if v == self.0.atoms.net_wm_window_type_dock => {
+                                        WindowType::Dock
+                                    }
+                                    v if v == self.0.atoms.net_wm_window_type_desktop => {
+                                        WindowType::Desktop
+                                    }
+                                    _ => WindowType::Normal,
+                                },
+                            },
+                        };
+
+                        // ICCCM mandates client root windows have WM_STATE, and we are only
+                        // interested in NormalState (1) and in _NET_WM_WINDOW_TYPE_NORMAL
+                        let selectable = state_prop.r#type() == self.0.atoms.wm_state
+                            && state_prop.value::<u32>()[0] == 1
+                            && typ == WindowType::Normal;
+
                         let w = Window {
                             sess: Session(self.0.clone()),
                             id,
@@ -219,29 +244,8 @@ impl Session {
                                 (geom.x(), geom.y()).into(),
                                 (geom.width() as i16, geom.height() as i16).into(),
                             ),
-                            typ: match wc.xw == self.0.root {
-                                true => WindowType::Root,
-                                false => match type_prop.length() {
-                                    // some clients (Spotify) do not set a _NET_WM_WINDOW_TYPE at all.
-                                    // we already. we just treat them as TYPE_NORMAL here, because
-                                    // unless they've been selected somehow it won't even matter.
-                                    0 => WindowType::Normal,
-                                    _ => match type_prop.value::<x::Atom>()[0] {
-                                        v if v == self.0.atoms.net_wm_window_type_dock => {
-                                            WindowType::Dock
-                                        }
-                                        v if v == self.0.atoms.net_wm_window_type_desktop => {
-                                            WindowType::Desktop
-                                        }
-                                        _ => WindowType::Normal,
-                                    },
-                                },
-                            },
-                            //
-                            // ICCCM mandates client root windows have WM_STATE, and we are only
-                            // interested in NormalState (1)
-                            selectable: state_prop.r#type() == self.0.atoms.wm_state
-                                && state_prop.value::<u32>()[0] == 1,
+                            typ,
+                            selectable,
                         };
 
                         match w.typ {
