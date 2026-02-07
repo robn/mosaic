@@ -418,7 +418,7 @@ impl Window {
                     | MoveResizeWindowFlags::Y
                     | MoveResizeWindowFlags::WIDTH
                     | MoveResizeWindowFlags::HEIGHT
-                    | MoveResizeWindowFlags::GRAVITY_NORTH_WEST)
+                    | MoveResizeWindowFlags::GRAVITY_STATIC)
                     .bits(),
                 geom.min.x as u32,
                 geom.min.y as u32,

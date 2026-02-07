@@ -221,10 +221,7 @@ fn main() -> xcb::Result<()> {
         let framed = geom.inner_box(frame);
         debug!("computed new framed geom: {:?}", framed);
 
-        let adjusted = framed.translate((-frame.left, -frame.top).into());
-        debug!("computed new adjusted box: {:?}", adjusted);
-
-        adjusted
+        framed
     };
 
     sess.window(target_id).set_geom(&new_geom)?;
