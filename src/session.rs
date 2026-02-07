@@ -367,21 +367,44 @@ impl Window {
     }
 
     pub(crate) fn frame_extents(&self) -> xcb::Result<SideOffsets2D> {
-        // XXX include gtk_frame_extents?
-
-        let prop = self.sess.0.atoms.net_frame_extents;
-
-        let extents_prop = self.sess.0.conn.wait_for_reply(self.sess.x_get_property(
+        // batch request for net_extents, because most windows won't have gtk_extents and we want
+        // to limit the wait as much as possible
+        let net_extents_prop_cookie = self.sess.x_get_property(
             self.xw,
-            prop,
+            self.sess.0.atoms.net_frame_extents,
+            x::ATOM_CARDINAL,
+        );
+
+        // gtk apps with client-side decorations. _GTK_FRAME_EXTENTS is the border and shadow
+        // region of the client window. we prefer this over _NET_FRAME_EXTENTS, and because its
+        // "inside" the window, we negate the offsets
+        let gtk_extents_prop = self.sess.0.conn.wait_for_reply(self.sess.x_get_property(
+            self.xw,
+            self.sess.0.atoms.gtk_frame_extents,
             x::ATOM_CARDINAL,
         ))?;
 
-        match extents_prop.r#type() {
+        if gtk_extents_prop.r#type() == x::ATOM_CARDINAL {
+            let v: &[u32] = gtk_extents_prop.value();
+            debug!("window {} using gtk frame extents: {:?}", self.id, v);
+            // Cardinal order: left, right, top, bottom
+            // SideOffsets2D order: top, right, bottom, left
+            return Ok(-SideOffsets2D::new(
+                v[2] as i16,
+                v[1] as i16,
+                v[3] as i16,
+                v[0] as i16,
+            ));
+        }
+
+        // fall back to standard _NET_FRAME_EXTENTS
+        let net_extents_prop = self.sess.0.conn.wait_for_reply(net_extents_prop_cookie)?;
+        match net_extents_prop.r#type() {
             x::ATOM_CARDINAL => {
-                let v: &[u32] = extents_prop.value();
-                // CSS order: top, right, bottom, left
-                // Cardinal order: left, right, bottom, top
+                let v: &[u32] = net_extents_prop.value();
+                debug!("window {} using net frame extents: {:?}", self.id, v);
+                // Cardinal order: left, right, top, bottom
+                // SideOffsets2D order: top, right, bottom, left
                 Ok(SideOffsets2D::new(
                     v[2] as i16,
                     v[1] as i16,
@@ -390,10 +413,7 @@ impl Window {
                 ))
             }
             _ => {
-                debug!(
-                    "window {} has no extents {:?}, assuming zero",
-                    self.id, prop
-                );
+                debug!("window {} has no frame extents, assuming zero", self.id);
                 Ok(SideOffsets2D::zero())
             }
         }
