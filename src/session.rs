@@ -47,6 +47,13 @@ bitflags::bitflags! {
     }
 }
 
+// max property length in 4-byte ints. 2K is overkill but enough for any property we want
+const PROPERTY_LONG_LENGTH: u32 = 512;
+
+// X cursor font glyph index for window selection
+const XC_CROSSHAIR: u16 = 34;
+const XC_CROSSHAIR_MASK: u16 = 35;
+
 // Session is sort of the entire X11 session at a moment in time. Not _exactly_ because the
 // connection is live, but sort of conceptually what you expect.
 //
@@ -280,8 +287,8 @@ impl Session {
             cid: cursor,
             source_font: font,
             mask_font: font,
-            source_char: 34, // XC_crosshair
-            mask_char: 35,
+            source_char: XC_CROSSHAIR,
+            mask_char: XC_CROSSHAIR_MASK,
             fore_red: 0x0000,
             fore_green: 0x0000,
             fore_blue: 0x0000,
@@ -343,7 +350,7 @@ impl Session {
             property: prop,
             r#type: ty,
             long_offset: 0,
-            long_length: 512,
+            long_length: PROPERTY_LONG_LENGTH,
         })
     }
 }
