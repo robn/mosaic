@@ -2,7 +2,7 @@ mod condargs;
 mod geom;
 mod session;
 
-use crate::condargs::{percent_threshold, PercentThreshold};
+use crate::condargs::{ConditionArg, OrderedComparator};
 use crate::geom::*;
 use crate::session::Session;
 
@@ -29,10 +29,17 @@ struct RootArgs {
     #[clap(long)]
     valign: Option<VertAlignArgs>,
 
-    #[clap(long, value_parser=percent_threshold, default_value=None)]
-    width: Option<Vec<PercentThreshold>>,
-    #[clap(long, value_parser=percent_threshold, default_value=None)]
-    height: Option<Vec<PercentThreshold>>,
+    #[clap(long, value_parser=percent_for_ratio, default_value=None)]
+    width: Option<Vec<PercentForRatioArg>>,
+    #[clap(long, value_parser=percent_for_ratio, default_value=None)]
+    height: Option<Vec<PercentForRatioArg>>,
+}
+
+type PercentForRatioArg = ConditionArg<i32, OrderedComparator<f32>>;
+
+pub(crate) fn percent_for_ratio(s: &str) -> Result<PercentForRatioArg, String> {
+    s.parse::<PercentForRatioArg>()
+        .map_err(|e| format!("{:?}", e))
 }
 
 #[derive(Debug)]

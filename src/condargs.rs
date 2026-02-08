@@ -1,46 +1,50 @@
 use std::str::FromStr;
 
-pub(crate) fn percent_threshold(s: &str) -> Result<PercentThreshold, String> {
-    s.parse::<PercentThreshold>()
-        .map_err(|e| format!("{:?}", e))
-}
-
 #[derive(Debug, Clone)]
-pub(crate) struct PercentThreshold {
-    pub value: i32,
-    compare: Option<CompareThreshold<f32>>,
+pub(crate) struct ConditionArg<T, C> {
+    pub value: T,
+    cond: Option<C>,
 }
 
-impl PercentThreshold {
-    pub fn matches(&self, v: f32) -> bool {
-        self.compare.as_ref().map_or(true, |c| c.matches(v))
+impl<T, C> ConditionArg<T, C>
+where
+    C: Comparator,
+{
+    pub fn matches(&self, v: C::Value) -> bool {
+        self.cond.as_ref().map_or(true, |c| c.matches(v))
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct PercentThresholdParseError;
+pub(crate) struct ConditionArgParseError;
 
-impl FromStr for PercentThreshold {
-    type Err = PercentThresholdParseError;
-    fn from_str(s: &str) -> Result<PercentThreshold, PercentThresholdParseError> {
+impl<T, C> FromStr for ConditionArg<T, C>
+where
+    T: FromStr,
+    C: FromStr,
+{
+    type Err = ConditionArgParseError;
+    fn from_str(s: &str) -> Result<Self, ConditionArgParseError> {
         match s.split_once('@') {
-            Some((n, c)) => Ok(PercentThreshold {
-                value: n.parse::<i32>().map_err(|_| PercentThresholdParseError)?,
-                compare: Some(
-                    c.parse::<CompareThreshold<f32>>()
-                        .map_err(|_| PercentThresholdParseError)?,
-                ),
+            Some((n, c)) => Ok(Self {
+                value: n.parse::<T>().map_err(|_| ConditionArgParseError)?,
+                cond: Some(c.parse::<C>().map_err(|_| ConditionArgParseError)?),
             }),
-            None => Ok(PercentThreshold {
-                value: s.parse::<i32>().map_err(|_| PercentThresholdParseError)?,
-                compare: None,
+            None => Ok(ConditionArg {
+                value: s.parse::<T>().map_err(|_| ConditionArgParseError)?,
+                cond: None,
             }),
         }
     }
 }
 
+pub(crate) trait Comparator {
+    type Value;
+    fn matches(&self, v: Self::Value) -> bool;
+}
+
 #[derive(Debug, Clone)]
-enum CompareThreshold<T> {
+pub(crate) enum OrderedComparator<T> {
     Equal(T),
     NotEqual(T),
     LessThan(T),
@@ -49,51 +53,52 @@ enum CompareThreshold<T> {
     GreaterThanOrEqual(T),
 }
 
-impl<T> CompareThreshold<T>
+impl<T> Comparator for OrderedComparator<T>
 where
     T: PartialOrd,
 {
+    type Value = T;
     fn matches(&self, v: T) -> bool {
         match self {
-            CompareThreshold::Equal(t) => v == *t,
-            CompareThreshold::NotEqual(t) => v != *t,
-            CompareThreshold::LessThan(t) => v < *t,
-            CompareThreshold::LessThanOrEqual(t) => v <= *t,
-            CompareThreshold::GreaterThan(t) => v > *t,
-            CompareThreshold::GreaterThanOrEqual(t) => v >= *t,
+            OrderedComparator::Equal(t) => v == *t,
+            OrderedComparator::NotEqual(t) => v != *t,
+            OrderedComparator::LessThan(t) => v < *t,
+            OrderedComparator::LessThanOrEqual(t) => v <= *t,
+            OrderedComparator::GreaterThan(t) => v > *t,
+            OrderedComparator::GreaterThanOrEqual(t) => v >= *t,
         }
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct CompareThresholdParseError;
+pub(crate) struct OrderedComparatorParseError;
 
-impl<T> FromStr for CompareThreshold<T>
+impl<T> FromStr for OrderedComparator<T>
 where
     T: PartialOrd + PartialEq + FromStr,
 {
-    type Err = CompareThresholdParseError;
-    fn from_str(s: &str) -> Result<CompareThreshold<T>, CompareThresholdParseError> {
+    type Err = OrderedComparatorParseError;
+    fn from_str(s: &str) -> Result<OrderedComparator<T>, OrderedComparatorParseError> {
         if let Some((o, n)) = s.split_at_checked(2) {
             match o {
                 "==" => {
-                    return Ok(CompareThreshold::Equal(
-                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    return Ok(OrderedComparator::Equal(
+                        n.parse::<T>().map_err(|_| OrderedComparatorParseError)?,
                     ))
                 }
                 "!=" => {
-                    return Ok(CompareThreshold::NotEqual(
-                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    return Ok(OrderedComparator::NotEqual(
+                        n.parse::<T>().map_err(|_| OrderedComparatorParseError)?,
                     ))
                 }
                 "<=" => {
-                    return Ok(CompareThreshold::LessThanOrEqual(
-                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    return Ok(OrderedComparator::LessThanOrEqual(
+                        n.parse::<T>().map_err(|_| OrderedComparatorParseError)?,
                     ))
                 }
                 ">=" => {
-                    return Ok(CompareThreshold::GreaterThanOrEqual(
-                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    return Ok(OrderedComparator::GreaterThanOrEqual(
+                        n.parse::<T>().map_err(|_| OrderedComparatorParseError)?,
                     ))
                 }
                 _ => {}
@@ -102,28 +107,28 @@ where
         if let Some((o, n)) = s.split_at_checked(1) {
             match o {
                 "=" => {
-                    return Ok(CompareThreshold::Equal(
-                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    return Ok(OrderedComparator::Equal(
+                        n.parse::<T>().map_err(|_| OrderedComparatorParseError)?,
                     ))
                 }
                 "!" => {
-                    return Ok(CompareThreshold::NotEqual(
-                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    return Ok(OrderedComparator::NotEqual(
+                        n.parse::<T>().map_err(|_| OrderedComparatorParseError)?,
                     ))
                 }
                 "<" => {
-                    return Ok(CompareThreshold::LessThan(
-                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    return Ok(OrderedComparator::LessThan(
+                        n.parse::<T>().map_err(|_| OrderedComparatorParseError)?,
                     ))
                 }
                 ">" => {
-                    return Ok(CompareThreshold::GreaterThan(
-                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    return Ok(OrderedComparator::GreaterThan(
+                        n.parse::<T>().map_err(|_| OrderedComparatorParseError)?,
                     ))
                 }
                 _ => {}
             }
         }
-        Err(CompareThresholdParseError)
+        Err(OrderedComparatorParseError)
     }
 }
