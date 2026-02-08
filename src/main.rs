@@ -8,7 +8,11 @@ use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, ValueEnum};
 use log::debug;
 
-// XXX use ArgGroup enums for target: https://github.com/clap-rs/clap/issues/2621
+fn percent(s: &str) -> Result<i16, String> {
+    clap_num::number_range(s, 0, 100)
+}
+
+// XXX use ArgGroup enums: https://github.com/clap-rs/clap/issues/2621
 #[derive(Parser, Debug)]
 #[clap(group(ArgGroup::new("target").required(true)))]
 struct RootArgs {
@@ -21,40 +25,16 @@ struct RootArgs {
     #[clap(long, group = "target")]
     select: bool,
 
-    #[clap(long, value_enum)]
-    horiz: HorizSpec,
+    #[clap(long)]
+    halign: Option<HorizAlignArgs>,
 
-    #[clap(long, value_enum)]
-    vert: VertSpec,
-}
+    #[clap(long)]
+    valign: Option<VertAlignArgs>,
 
-#[derive(ValueEnum, Clone, Copy, Debug)]
-enum HorizSpec {
-    Current,
-    Left,
-    Left25,
-    Left50,
-    Left75,
-    Right,
-    Right25,
-    Right50,
-    Right75,
-    Left33,
-    Mid33,
-    Right33,
-    Mid50,
-    Left30,
-    Mid40,
-    Right30,
-    Full,
-}
-
-#[derive(ValueEnum, Clone, Copy, Debug)]
-enum VertSpec {
-    Current,
-    Top,
-    Bottom,
-    Full,
+    #[clap(long, value_parser=percent, default_value=None)]
+    width: Option<i16>,
+    #[clap(long, value_parser=percent, default_value=None)]
+    height: Option<i16>,
 }
 
 #[derive(Debug)]
@@ -63,6 +43,19 @@ enum TargetArgs {
     Id(u32),
     Select,
     Active,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum HorizAlignArgs {
+    Left,
+    Middle,
+    Right,
+}
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum VertAlignArgs {
+    Top,
+    Middle,
+    Bottom,
 }
 
 fn main() -> Result<()> {
@@ -219,10 +212,10 @@ fn main() -> Result<()> {
     debug!("avail geom: {:?}", avail_geom);
 
     let new_geom = {
-        let geom = compute_new_geom(&current_geom, &avail_geom, args.horiz, args.vert);
+        let geom = compute_new_geom(&current_geom, &avail_geom, &args);
         debug!(
-            "computed new geom (hspec={:?} vspec={:?}: {:?}",
-            args.horiz, args.vert, geom
+            "computed new geom (halign={:?} width={:?} valign={:?} height={:?}): {:?}",
+            args.halign, args.valign, args.width, args.height, geom
         );
 
         let framed = geom.inner_box(frame);
@@ -238,74 +231,38 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn compute_new_geom(current: &Box2D, avail: &Box2D, hspec: HorizSpec, vspec: VertSpec) -> Box2D {
-    let (x1, x2) = compute_new_horiz(current, avail, hspec);
-    let (y1, y2) = compute_new_vert(current, avail, vspec);
-    Box2D::new((x1, y1).into(), (x2, y2).into())
-}
+fn compute_new_geom(current: &Box2D, avail: &Box2D, args: &RootArgs) -> Box2D {
+    let w = match args.width {
+        Some(p) if p == 0 => 1,
+        Some(p) if p == 100 => avail.width(),
+        Some(p) => (avail.width() as i32 * p as i32).div_euclid(100) as i16,
+        None => current.width(),
+    };
 
-fn compute_new_horiz(current: &Box2D, avail: &Box2D, hspec: HorizSpec) -> (i16, i16) {
-    match hspec {
-        // Don't modify horizontal
-        HorizSpec::Current => (current.min.x, current.max.x),
+    let h = match args.height {
+        Some(p) if p == 0 => 1,
+        Some(p) if p == 100 => avail.height(),
+        Some(p) => (avail.height() as i32 * p as i32).div_euclid(100) as i16,
+        None => current.height(),
+    };
 
-        // Leftmost 25/50/75%
-        HorizSpec::Left25 => (avail.min.x, avail.min.x + avail.width().div_euclid(4)),
-        HorizSpec::Left50 | HorizSpec::Left => {
-            (avail.min.x, avail.min.x + avail.width().div_euclid(2))
-        }
-        HorizSpec::Left75 => (avail.min.x, avail.min.x + (avail.width() * 3).div_euclid(4)),
+    let x = match args.halign {
+        Some(p) => match p {
+            HorizAlignArgs::Left => avail.min.x,
+            HorizAlignArgs::Middle => (avail.width() - w).div_euclid(2),
+            HorizAlignArgs::Right => avail.max.x - w,
+        },
+        None => current.min.x,
+    };
 
-        // Rightmost 25/50/75%
-        HorizSpec::Right25 => (avail.max.x - avail.width().div_euclid(4), avail.max.x),
-        HorizSpec::Right50 | HorizSpec::Right => {
-            (avail.max.x - avail.width().div_euclid(2), avail.max.x)
-        }
-        HorizSpec::Right75 => (avail.max.x - (avail.width() * 3).div_euclid(4), avail.max.x),
+    let y = match args.valign {
+        Some(p) => match p {
+            VertAlignArgs::Top => avail.min.y,
+            VertAlignArgs::Middle => (avail.height() - h).div_euclid(2),
+            VertAlignArgs::Bottom => avail.max.y - h,
+        },
+        None => current.min.y,
+    };
 
-        // Thirds
-        HorizSpec::Left33 => (avail.min.x, avail.max.x - (avail.width() * 2).div_euclid(3)),
-        HorizSpec::Mid33 => {
-            let w = avail.width().div_euclid(3);
-            (avail.min.x + w, avail.max.x - w)
-        }
-        HorizSpec::Right33 => (avail.min.x + (avail.width() * 2).div_euclid(3), avail.max.x),
-
-        // Middle 50%
-        HorizSpec::Mid50 => (
-            avail.max.x - (avail.width() * 3).div_euclid(4),
-            avail.min.x + (avail.width() * 3).div_euclid(4),
-        ),
-
-        // 30/40/30
-        HorizSpec::Left30 => (
-            avail.min.x,
-            avail.min.x + (avail.width() * 3).div_euclid(10),
-        ),
-        HorizSpec::Mid40 => (
-            avail.min.x + (avail.width() * 3).div_euclid(10),
-            avail.max.x - (avail.width() * 3).div_euclid(10),
-        ),
-        HorizSpec::Right30 => (
-            avail.max.x - (avail.width() * 3).div_euclid(10),
-            avail.max.x,
-        ),
-
-        // Full width
-        HorizSpec::Full => (avail.min.x, avail.max.x),
-    }
-}
-
-fn compute_new_vert(current: &Box2D, avail: &Box2D, vspec: VertSpec) -> (i16, i16) {
-    match vspec {
-        // Don't modify vertical
-        VertSpec::Current => (current.min.y, current.max.y),
-
-        // Top & bottom half
-        VertSpec::Top => (avail.min.y, avail.min.y + avail.height().div_euclid(2)),
-        VertSpec::Bottom => (avail.max.y - avail.height().div_euclid(2), avail.max.y),
-
-        // Full height
-        VertSpec::Full => (avail.min.y, avail.max.y),
-    }
+    Box2D::from_origin_and_size((x, y).into(), (w, h).into())
 }
