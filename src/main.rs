@@ -7,10 +7,7 @@ use crate::session::Session;
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, ValueEnum};
 use log::debug;
-
-fn percent(s: &str) -> Result<i16, String> {
-    clap_num::number_range(s, 0, 100)
-}
+use std::str::FromStr;
 
 // XXX use ArgGroup enums: https://github.com/clap-rs/clap/issues/2621
 #[derive(Parser, Debug)]
@@ -31,10 +28,138 @@ struct RootArgs {
     #[clap(long)]
     valign: Option<VertAlignArgs>,
 
-    #[clap(long, value_parser=percent, default_value=None)]
-    width: Option<i16>,
-    #[clap(long, value_parser=percent, default_value=None)]
-    height: Option<i16>,
+    #[clap(long, value_parser=percent_threshold, default_value=None)]
+    width: Option<Vec<PercentThreshold>>,
+    #[clap(long, value_parser=percent_threshold, default_value=None)]
+    height: Option<Vec<PercentThreshold>>,
+}
+
+fn percent_threshold(s: &str) -> Result<PercentThreshold, String> {
+    s.parse::<PercentThreshold>()
+        .map_err(|e| format!("{:?}", e))
+}
+
+#[derive(Debug, Clone)]
+struct PercentThreshold {
+    value: i32,
+    compare: Option<CompareThreshold<f32>>,
+}
+
+impl PercentThreshold {
+    fn matches(&self, v: f32) -> bool {
+        self.compare.as_ref().map_or(true, |c| c.matches(v))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PercentThresholdParseError;
+
+impl FromStr for PercentThreshold {
+    type Err = PercentThresholdParseError;
+    fn from_str(s: &str) -> Result<PercentThreshold, PercentThresholdParseError> {
+        match s.split_once('@') {
+            Some((n, c)) => Ok(PercentThreshold {
+                value: n.parse::<i32>().map_err(|_| PercentThresholdParseError)?,
+                compare: Some(
+                    c.parse::<CompareThreshold<f32>>()
+                        .map_err(|_| PercentThresholdParseError)?,
+                ),
+            }),
+            None => Ok(PercentThreshold {
+                value: s.parse::<i32>().map_err(|_| PercentThresholdParseError)?,
+                compare: None,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum CompareThreshold<T> {
+    Equal(T),
+    NotEqual(T),
+    LessThan(T),
+    LessThanOrEqual(T),
+    GreaterThan(T),
+    GreaterThanOrEqual(T),
+}
+
+impl<T> CompareThreshold<T>
+where
+    T: PartialOrd,
+{
+    fn matches(&self, v: T) -> bool {
+        match self {
+            CompareThreshold::Equal(t) => v == *t,
+            CompareThreshold::NotEqual(t) => v != *t,
+            CompareThreshold::LessThan(t) => v < *t,
+            CompareThreshold::LessThanOrEqual(t) => v <= *t,
+            CompareThreshold::GreaterThan(t) => v > *t,
+            CompareThreshold::GreaterThanOrEqual(t) => v >= *t,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CompareThresholdParseError;
+
+impl<T> FromStr for CompareThreshold<T>
+where
+    T: PartialOrd + PartialEq + FromStr,
+{
+    type Err = CompareThresholdParseError;
+    fn from_str(s: &str) -> Result<CompareThreshold<T>, CompareThresholdParseError> {
+        if let Some((o, n)) = s.split_at_checked(2) {
+            match o {
+                "==" => {
+                    return Ok(CompareThreshold::Equal(
+                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    ))
+                }
+                "!=" => {
+                    return Ok(CompareThreshold::NotEqual(
+                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    ))
+                }
+                "<=" => {
+                    return Ok(CompareThreshold::LessThanOrEqual(
+                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    ))
+                }
+                ">=" => {
+                    return Ok(CompareThreshold::GreaterThanOrEqual(
+                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    ))
+                }
+                _ => {}
+            }
+        }
+        if let Some((o, n)) = s.split_at_checked(1) {
+            match o {
+                "=" => {
+                    return Ok(CompareThreshold::Equal(
+                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    ))
+                }
+                "!" => {
+                    return Ok(CompareThreshold::NotEqual(
+                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    ))
+                }
+                "<" => {
+                    return Ok(CompareThreshold::LessThan(
+                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    ))
+                }
+                ">" => {
+                    return Ok(CompareThreshold::GreaterThan(
+                        n.parse::<T>().map_err(|_| CompareThresholdParseError)?,
+                    ))
+                }
+                _ => {}
+            }
+        }
+        Err(CompareThresholdParseError)
+    }
 }
 
 #[derive(Debug)]
@@ -213,10 +338,7 @@ fn main() -> Result<()> {
 
     let new_geom = {
         let geom = compute_new_geom(&current_geom, &avail_geom, &args);
-        debug!(
-            "computed new geom (halign={:?} width={:?} valign={:?} height={:?}): {:?}",
-            args.halign, args.valign, args.width, args.height, geom
-        );
+        debug!("computed new geom: {:?}", geom);
 
         let framed = geom.inner_box(frame);
         debug!("computed new framed geom: {:?}", framed);
@@ -232,19 +354,46 @@ fn main() -> Result<()> {
 }
 
 fn compute_new_geom(current: &Box2D, avail: &Box2D, args: &RootArgs) -> Box2D {
-    let w = match args.width {
-        Some(p) if p == 0 => 1,
-        Some(p) if p == 100 => avail.width(),
-        Some(p) => (avail.width() as i32 * p as i32).div_euclid(100) as i16,
-        None => current.width(),
-    };
+    let ratio = avail.width() as f32 / avail.height() as f32;
 
-    let h = match args.height {
-        Some(p) if p == 0 => 1,
-        Some(p) if p == 100 => avail.height(),
-        Some(p) => (avail.height() as i32 * p as i32).div_euclid(100) as i16,
-        None => current.height(),
-    };
+    debug!(
+        "ratio {} halign {:?} valign {:?} width {:?} height {:?}",
+        ratio, args.halign, args.valign, args.width, args.height
+    );
+
+    let w = args.width.as_ref().map_or_else(
+        || current.width(),
+        |v| {
+            v.iter().filter(|pc| pc.matches(ratio)).next().map_or_else(
+                || current.width(),
+                |pc| {
+                    debug!("selected width rule {:?} for ratio {}", pc, ratio);
+                    match pc.value {
+                        0 => 1,
+                        100 => avail.width(),
+                        w => (avail.width() as i32 * w).div_euclid(100) as i16,
+                    }
+                },
+            )
+        },
+    );
+
+    let h = args.height.as_ref().map_or_else(
+        || current.height(),
+        |v| {
+            v.iter().filter(|pc| pc.matches(ratio)).next().map_or_else(
+                || current.height(),
+                |pc| {
+                    debug!("selected height rule {:?} for ratio {}", pc, ratio);
+                    match pc.value {
+                        0 => 1,
+                        100 => avail.height(),
+                        h => (avail.height() as i32 * h).div_euclid(100) as i16,
+                    }
+                },
+            )
+        },
+    );
 
     let x = match args.halign {
         Some(p) => match p {
