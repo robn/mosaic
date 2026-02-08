@@ -43,6 +43,9 @@ enum HorizSpec {
     Mid33,
     Right33,
     Mid50,
+    Left30,
+    Mid40,
+    Right30,
     Full,
 }
 
@@ -272,6 +275,20 @@ fn compute_new_horiz(current: &Box2D, avail: &Box2D, hspec: HorizSpec) -> (i16, 
         HorizSpec::Mid50 => (
             avail.max.x - (avail.width() * 3).div_euclid(4),
             avail.min.x + (avail.width() * 3).div_euclid(4),
+        ),
+
+        // 30/40/30
+        HorizSpec::Left30 => (
+            avail.min.x,
+            avail.min.x + (avail.width() * 3).div_euclid(10),
+        ),
+        HorizSpec::Mid40 => (
+            avail.min.x + (avail.width() * 3).div_euclid(10),
+            avail.max.x - (avail.width() * 3).div_euclid(10),
+        ),
+        HorizSpec::Right30 => (
+            avail.max.x - (avail.width() * 3).div_euclid(10),
+            avail.max.x,
         ),
 
         // Full width
