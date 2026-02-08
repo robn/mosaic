@@ -398,7 +398,7 @@ fn compute_new_geom(current: &Box2D, avail: &Box2D, args: &RootArgs) -> Box2D {
     let x = match args.halign {
         Some(p) => match p {
             HorizAlignArgs::Left => avail.min.x,
-            HorizAlignArgs::Middle => (avail.width() - w).div_euclid(2),
+            HorizAlignArgs::Middle => avail.min.x + (avail.width() - w).div_euclid(2),
             HorizAlignArgs::Right => avail.max.x - w,
         },
         None => current.min.x,
@@ -407,7 +407,7 @@ fn compute_new_geom(current: &Box2D, avail: &Box2D, args: &RootArgs) -> Box2D {
     let y = match args.valign {
         Some(p) => match p {
             VertAlignArgs::Top => avail.min.y,
-            VertAlignArgs::Middle => (avail.height() - h).div_euclid(2),
+            VertAlignArgs::Middle => avail.min.y + (avail.height() - h).div_euclid(2),
             VertAlignArgs::Bottom => avail.max.y - h,
         },
         None => current.min.y,
